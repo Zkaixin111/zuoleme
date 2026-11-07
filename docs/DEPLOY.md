@@ -155,11 +155,22 @@ iOS 说明：iOS 需要 16.4+ 且必须先把网页「添加到主屏幕」再�
 | 通知出现后等 30 秒 | 通知**不自动消失**（停留在通知栏） |
 | 点通知 | 打开/聚焦应用，顶部常驻卡片显示该事项 |
 | 点通知上的「完成」 | 该事项标记完成，提醒清空 |
-| 修改某事的截止时间 | 旧提醒重建：应用里的「下次提醒」立即变化 |
+| 修改某事的截止时间 | **当前无 UI 入口**，需调接口验证（见下方说明）。旧提醒应被重建，应用里的「下次提醒」立即变化 |
 | 勾选完成 / 删除 | 该事项不再收到提醒 |
 | 断网打开应用 | 应用壳仍可打开 |
 
 Cron 是每分钟跑一次，所以提醒误差最多约 1 分钟，属正常。
+
+> **关于「修改截止时间」这一项**：MVP 的界面只做了「新建 / 勾选完成 / 删除」，**没有编辑标题或截止时间的入口**
+> （时间输错了只能删掉重建）。接口本身支持，可用下面的命令验证旧提醒会被重建：
+>
+> ```bash
+> curl -X PATCH "https://zuoleme.<你的子域>.workers.dev/api/todos/<待办id>" \
+>   -H "X-Token: 你的API_TOKEN" -H "Content-Type: application/json" \
+>   -d '{"deadline": 1799999999000}'    # 换成新的毫秒时间戳
+> ```
+>
+> 之后 `SELECT kind, sent FROM reminders WHERE todo_id='<id>'` 应只剩新时间点对应的那几档。
 
 ---
 
@@ -207,6 +218,7 @@ curl "http://127.0.0.1:8787/cdn-cgi/local/scheduled"
 
 ```bash
 git pull
+npm install            # 先装依赖，确保下面的 wrangler 是项目声明的版本
 
 # ① 先看 worker/migrations/ 有没有新文件
 ls worker/migrations/
@@ -214,7 +226,6 @@ ls worker/migrations/
 # ② 有新迁移文件 → 必须先 apply，再 deploy（顺序不能反）
 npx wrangler d1 migrations apply zuoleme-db --remote
 
-npm install
 npm run build
 npx wrangler deploy
 ```
