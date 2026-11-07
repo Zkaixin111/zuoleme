@@ -1,0 +1,42 @@
+{
+  "name": "zuoleme",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "做了么 - 待办 + 六档到期提醒 + 常驻最近事项的 PWA",
+  "scripts": {
+    "dev": "vite",
+    "dev:worker": "wrangler dev",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.sw.json && tsc --noEmit -p tsconfig.worker.json",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "icons": "node scripts/gen-icons.mjs",
+    "db:migrate:local": "wrangler d1 migrations apply zuoleme-db --local",
+    "db:migrate": "wrangler d1 migrations apply zuoleme-db --remote",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.0.0",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.45",
+    "tailwindcss": "^3.4.10",
+    "typescript": "~5.9.3",
+    "vite": "^5.4.3",
+    "vite-plugin-pwa": "^0.20.5",
+    "vitest": "^2.0.5",
+    "workbox-core": "^7.1.0",
+    "workbox-precaching": "^7.1.0",
+    "workbox-routing": "^7.1.0",
+    "workbox-strategies": "^7.1.0",
+    "wrangler": "^4.0.0"
+  }
+}

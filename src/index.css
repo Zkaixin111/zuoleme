@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-900 text-ink-100 font-sans antialiased;
+    /* 适配全面屏安全区（Android 手势条 / 刘海） */
+    padding-bottom: env(safe-area-inset-bottom);
+    overscroll-behavior-y: none;
+  }
+
+  input,
+  button,
+  select {
+    font: inherit;
+  }
+
+  /* 去掉 iOS/部分安卓浏览器点击时的蓝色高亮 */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl bg-ink-800/80 shadow-card ring-1 ring-white/5;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium
+      transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100;
+  }
+
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-500;
+  }
+
+  .btn-ghost {
+    @apply btn bg-white/5 text-ink-100 hover:bg-white/10;
+  }
+
+  .field {
+    @apply w-full rounded-xl bg-ink-900/80 px-4 py-3 text-base text-white
+      ring-1 ring-white/10 outline-none placeholder:text-ink-500
+      focus:ring-2 focus:ring-brand-500;
+  }
+}
