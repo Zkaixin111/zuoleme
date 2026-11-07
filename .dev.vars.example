@@ -1,0 +1,8 @@
+# 本地开发用的环境变量示例（复制成 .dev.vars 后填写真实值）
+# .dev.vars 已被 .gitignore 忽略，不会被提交
+#
+# 生成 VAPID 密钥：见 docs/DEPLOY.md 第 1 节
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+VAPID_SUBJECT=mailto:you@example.com
+API_TOKEN=local-dev-token
