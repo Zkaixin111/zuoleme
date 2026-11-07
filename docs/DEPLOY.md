@@ -49,8 +49,9 @@ openssl ec -in vapid-private.pem -pubout -outform DER 2>/dev/null | tail -c 65 |
 openssl ec -in vapid-private.pem -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '=' | tr '/+' '_-'
 ```
 
-> 三种方案等价。**公钥必须是 65 字节 base64url（以 `BA` 开头的未压缩 P-256 点）**，否则 Worker 会报
-> `VAPID_PUBLIC_KEY 不合法`。
+> 三种方案等价。**公钥必须是 65 字节的 base64url 字符串（解码后首字节为 0x04，即未压缩 P-256 点）**。
+> 编码后一定以 `B` 开头，但**第二位的字母是随机的**（取决于 y 坐标），别因为「不是 `BA` 开头」就以为密钥错了。
+> 公钥长度不对（不是 65 字节）时 Worker 会明确报 `VAPID_PUBLIC_KEY 不合法`。
 
 `VAPID_SUBJECT` 填一个联系方式：`mailto:你的邮箱` 或 `https://你的域名`。
 
@@ -176,13 +177,18 @@ Cron 是每分钟跑一次，所以提醒误差最多约 1 分钟，属正常。
    没有记录 → 手机端「开启通知」其实没成功，重开一次。
 5. **Cron 是否在跑、是否有到期提醒**：
    ```bash
-   npx wrangler d1 execute zuoleme-db --remote --command "SELECT kind, datetime(fire_at/1000,'unixepoch','localtime') AS fire_at, sent FROM reminders ORDER BY fire_at DESC LIMIT 20"
+   npx wrangler d1 execute zuoleme-db --remote --command "SELECT kind, datetime(fire_at/1000,'unixepoch','localtime') AS fire_at, sent, attempts FROM reminders ORDER BY fire_at DESC LIMIT 20"
    npx wrangler tail --format pretty
    ```
-   `wrangler tail` 里能看到 `[cron] ... scanned=... pushed=...` 与 `[push] 发送失败 status=...` 日志。
+   每轮都会打一行汇总（哪怕没有到期项）：
+   `[cron] now=... scanned=0 sent=0 retried=0 givenUp=0 pushed=0 failed=0 subs=1`。
+   看到 `scanned=0` 且每轮都有这行 → 定时任务在跑，只是这一刻没有到期项。
+   看到 `retried>0` → 推送没成功，下一分钟会自动补发（1 小时窗口内）；`[push] 发送失败 status=...` 给出具体原因。
+   看到 `[cron] 放弃 ...` → 该提醒已超窗口/超次数被放弃，日志里带 `todo`、`kind`、`attempts`、`迟到` 毫秒数与最后一次失败原因。
 6. **`[push] 发送失败 status=401/403`**：VAPID 密钥不匹配（公钥与私钥不是一对）或 `VAPID_SUBJECT` 不是 mailto/https。
 7. **`[push] 发送失败 status=410`**：订阅已失效，Worker 会自动删除该订阅；手机上重新点「关闭通知 → 开启通知」重建订阅。
 8. **`scanned=0` 但确实有到期提醒**：检查待办是否已被标记完成（完成的待办不再推送），以及 `fire_at` 是否为毫秒时间戳。
+9. **`retried` 一直涨但一直不成功**：多半是手机端订阅已失效（但返回码不是 410），手机上重开一次通知开关；超过 1 小时会自动 `放弃` 并留 error 日志。
 
 手动触发一次定时任务（`wrangler dev` 本地调试用）：
 

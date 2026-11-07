@@ -133,30 +133,54 @@ describe('setTodoDone：完成时清理未发提醒', () => {
     expect(fake.matching(DELETE_UNSENT_REMINDERS)).toHaveLength(1);
   });
 
-  it('取消完成 → 不删除提醒（保留待发）', async () => {
-    const fake = new FakeD1();
+  it('取消完成 → 按当前截止时间重建未发提醒（先 DELETE 再 INSERT）', async () => {
+    const fake = new FakeD1({ todos: [{ id: TODO_ID, deadline: NOW + 10 * DAY_MS }] });
+
     await setTodoDone(asDb(fake), TODO_ID, false, NOW);
 
-    expect(fake.log[0].params[0]).toBe(0);
+    const update = fake.matching(UPDATE_TODO);
+    expect(update).toHaveLength(1);
+    expect(update[0].params[0]).toBe(0);
+
+    const deleteIndex = fake.indexOfFirst(DELETE_UNSENT_REMINDERS);
+    const firstInsertIndex = fake.indexOfFirst(INSERT_REMINDERS);
+    expect(deleteIndex).toBeGreaterThan(-1);
+    expect(firstInsertIndex).toBeGreaterThan(-1);
+    // 先删后插：避免重复插入造成同一档位发两份
+    expect(deleteIndex).toBeLessThan(firstInsertIndex);
+    expect(fake.matching(INSERT_REMINDERS)).toHaveLength(planReminders(NOW + 10 * DAY_MS, NOW).length);
+  });
+
+  it('待办不存在时取消完成 → 只更新标记，不插入任何提醒', async () => {
+    const fake = new FakeD1({ todos: [] });
+
+    await setTodoDone(asDb(fake), TODO_ID, false, NOW);
+
+    expect(fake.matching(UPDATE_TODO)).toHaveLength(1);
     expect(fake.matching(DELETE_UNSENT_REMINDERS)).toHaveLength(0);
+    expect(fake.matching(INSERT_REMINDERS)).toHaveLength(0);
   });
 
   /**
-   * 已知缺陷（D2）的固化用例：先完成、再取消完成之后，该待办的提醒被删光了，
-   * 却没有任何代码路径把它重建回来 —— 于是它「永久不再提醒」，界面上 nextFireAt 变成 null。
+   * 已知缺陷 D2 的回归用例。
    *
-   * 之所以断言当前行为而不是期望行为：待工程师修复。修复后本用例会失败，
-   * 届时请把它改成「取消完成后应重建未发提醒」。
+   * 历史问题：先完成、再取消完成之后，该待办的提醒被删光了却没有任何路径重建，
+   * 于是「永久不再提醒」、界面 nextFireAt 变成 null（误触路径有列表勾选与通知上的「完成」）。
+   * 修复后：取消完成必须按当前截止时间重建未发提醒。
    */
-  it('【已知缺陷 D2】完成→取消完成不会重建提醒，该事项此后永久没有提醒', async () => {
-    const fake = new FakeD1();
+  it('【D2 回归】完成→取消完成会重建提醒，不会永久失联', async () => {
+    const fake = new FakeD1({ todos: [{ id: TODO_ID, deadline: NOW + 10 * DAY_MS }] });
 
     await setTodoDone(asDb(fake), TODO_ID, true, NOW);
     expect(fake.matching(DELETE_UNSENT_REMINDERS)).toHaveLength(1);
+    expect(fake.matching(INSERT_REMINDERS)).toHaveLength(0);
 
     await setTodoDone(asDb(fake), TODO_ID, false, NOW);
-    // 取消完成只改了 done 标记，没有 INSERT 任何提醒
-    expect(fake.matching(INSERT_REMINDERS)).toHaveLength(0);
+    const inserts = fake.matching(INSERT_REMINDERS);
+    expect(inserts).toHaveLength(planReminders(NOW + 10 * DAY_MS, NOW).length);
+    expect(inserts.map((statement) => statement.params[3])).toEqual(
+      planReminders(NOW + 10 * DAY_MS, NOW).map((plan) => plan.kind),
+    );
   });
 });
 

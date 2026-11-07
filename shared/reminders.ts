@@ -104,3 +104,65 @@ export function reminderBody(kind: ReminderKind): string {
 export function reminderTag(todoId: string, kind: ReminderKind): string {
   return `todo:${todoId}:${kind}`;
 }
+
+/**
+ * 补发窗口：提醒过了 fire_at 之后最多再补发 1 小时。
+ *
+ * 为什么不是无限重试：`7d` 档位的文案是「还有 7 天截止」，如果过了点 3 小时才推出去，
+ * 文案已经失真；1 小时内补上仍然有意义，超过就放弃（并记 error 日志，不做静默丢弃）。
+ */
+export const REMINDER_GIVE_UP_MS = 60 * 60 * 1000;
+
+/** 单条提醒最多尝试次数（每分钟一轮，60 次≈1 小时，与补发窗口对齐） */
+export const REMINDER_MAX_ATTEMPTS = 60;
+
+/** 一轮扫描后对单条提醒的处置结论 */
+export type ReminderOutcome = 'sent' | 'retry' | 'give_up';
+
+export interface ReminderOutcomeInput {
+  /** 本轮是否至少有一个订阅推送成功 */
+  pushSucceeded: boolean;
+  /** 该提醒此前的已尝试次数（来自 reminders.attempts，本轮不计入） */
+  attempts: number;
+  /** 提醒应触发时间（毫秒时间戳） */
+  fireAt: number;
+  /** 当前时间（毫秒时间戳） */
+  now: number;
+}
+
+/**
+ * 决定一条到期提醒在本轮之后怎么处置（纯函数，便于单测）。
+ *
+ * 判定顺序：
+ * 1. 本轮有成功推送 → `sent`（标记 sent=1）
+ * 2. 已过补发窗口（`now - fireAt >= 1 小时`，等于也算超窗）→ `give_up`
+ * 3. 已尝试次数达到上限（`attempts >= 60`）→ `give_up`
+ * 4. 其余 → `retry`（保留 sent=0，下一轮再试）
+ *
+ * `sent` 与 `give_up` 都写 sent=1，区别是 `give_up` 必须记 error 日志，避免静默丢提醒。
+ *
+ * @param input 判定输入
+ */
+export function decideReminderOutcome(input: ReminderOutcomeInput): ReminderOutcome {
+  const { pushSucceeded, attempts, fireAt, now } = input;
+
+  if (pushSucceeded) {
+    return 'sent';
+  }
+
+  if (!Number.isFinite(fireAt) || !Number.isFinite(now)) {
+    // 数据异常时不无限重试，直接放弃由调用方记日志
+    return 'give_up';
+  }
+
+  if (now - fireAt >= REMINDER_GIVE_UP_MS) {
+    return 'give_up';
+  }
+
+  if (attempts >= REMINDER_MAX_ATTEMPTS) {
+    return 'give_up';
+  }
+
+  return 'retry';
+}
+

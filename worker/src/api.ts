@@ -169,7 +169,17 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
   // ---------- 单条待办 ----------
   const todoMatch = /^\/api\/todos\/([^/]+)$/.exec(path);
   if (todoMatch) {
-    const id = decodeURIComponent(todoMatch[1]);
+    // decodeURIComponent 对畸形转义（如 %E0%A4%A）会抛 URIError，
+    // 不捕获会变成 500 并把运行时堆栈（含本地文件路径）返回给客户端。
+    let id: string;
+    try {
+      id = decodeURIComponent(todoMatch[1]);
+    } catch {
+      return errorResponse('待办 id 编码不合法', 400);
+    }
+    if (id.length === 0) {
+      return errorResponse('待办 id 不能为空', 400);
+    }
 
     if (method === 'PATCH') {
       const body = await readJsonBody<UpdateTodoBody>(request);

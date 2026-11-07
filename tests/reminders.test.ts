@@ -3,7 +3,10 @@ import {
   DAY_MS,
   HOUR_MS,
   MINUTE_MS,
+  REMINDER_GIVE_UP_MS,
+  REMINDER_MAX_ATTEMPTS,
   REMINDER_OFFSETS,
+  decideReminderOutcome,
   earliestFireAt,
   planReminders,
   reminderBody,
@@ -116,6 +119,118 @@ describe('earliestFireAt / reminderBody / reminderTag', () => {
     expect(reminderTag('todo-1', '1h')).toBe('todo:todo-1:1h');
     expect(reminderTag('todo-1', '1h')).not.toBe(reminderTag('todo-1', 'due'));
     expect(reminderTag('todo-1', '1h')).not.toBe(reminderTag('todo-2', '1h'));
+  });
+});
+
+describe('decideReminderOutcome：推送失败不再永久丢弃（D1/D1b）', () => {
+  const fireAt = NOW;
+
+  it('常量与产品口径一致：补发窗口 1 小时、最多 60 次', () => {
+    expect(REMINDER_GIVE_UP_MS).toBe(HOUR_MS);
+    expect(REMINDER_MAX_ATTEMPTS).toBe(60);
+  });
+
+  it('只要有一个订阅推送成功 → sent（即使已经超过补发窗口）', () => {
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: true,
+        attempts: 0,
+        fireAt,
+        now: fireAt + 30 * MINUTE_MS,
+      }),
+    ).toBe('sent');
+
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: true,
+        attempts: 59,
+        fireAt,
+        now: fireAt + 2 * HOUR_MS,
+      }),
+    ).toBe('sent');
+  });
+
+  it('全失败且还在补发窗口内、次数未满 → retry（保留待下一轮补发）', () => {
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: false,
+        attempts: 0,
+        fireAt,
+        now: fireAt + 60_000,
+      }),
+    ).toBe('retry');
+  });
+
+  it('边界：迟到恰好 1 小时 → give_up（不再补发，文案已失真）', () => {
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: false,
+        attempts: 0,
+        fireAt,
+        now: fireAt + REMINDER_GIVE_UP_MS,
+      }),
+    ).toBe('give_up');
+  });
+
+  it('边界：迟到 1 小时减 1 毫秒 → 仍 retry', () => {
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: false,
+        attempts: 0,
+        fireAt,
+        now: fireAt + REMINDER_GIVE_UP_MS - 1,
+      }),
+    ).toBe('retry');
+  });
+
+  it('边界：attempts=59 → retry，attempts=60 → give_up', () => {
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: false,
+        attempts: REMINDER_MAX_ATTEMPTS - 1,
+        fireAt,
+        now: fireAt + MINUTE_MS,
+      }),
+    ).toBe('retry');
+
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: false,
+        attempts: REMINDER_MAX_ATTEMPTS,
+        fireAt,
+        now: fireAt + MINUTE_MS,
+      }),
+    ).toBe('give_up');
+  });
+
+  it('「无订阅者」与「有订阅者但全部失败」走同一结论（D1b）', () => {
+    const noSubscriber = decideReminderOutcome({
+      pushSucceeded: false,
+      attempts: 0,
+      fireAt,
+      now: fireAt + MINUTE_MS,
+    });
+    const allFailed = decideReminderOutcome({
+      // 有 3 个订阅、全部 500，结果同样是 pushSucceeded=false
+      pushSucceeded: false,
+      attempts: 0,
+      fireAt,
+      now: fireAt + MINUTE_MS,
+    });
+
+    expect(noSubscriber).toBe('retry');
+    expect(allFailed).toBe(noSubscriber);
+  });
+
+  it('时间数据异常（NaN）→ 直接 give_up，不无限重试', () => {
+    expect(
+      decideReminderOutcome({
+        pushSucceeded: false,
+        attempts: 0,
+        fireAt: Number.NaN,
+        now: NOW,
+      }),
+    ).toBe('give_up');
   });
 });
 
