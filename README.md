@@ -98,6 +98,27 @@ wrangler login → wrangler d1 create zuoleme-db → 填 database_id
 → npm run build → wrangler deploy
 ```
 
+> 更新代码时注意：**`worker/migrations/` 有新文件就必须先 `migrations apply --remote` 再 `deploy`**，
+> 否则线上 cron 会因缺列报 `no such column` 而停摆（手机上不会有任何异常提示）。
+
+## 已知限制（请先读，再决定能不能接受）
+
+1. **补发窗口是 1 小时**。推送没成功时会在 1 小时内每分钟重试，超过 1 小时按「放弃」处理并打
+   `[cron] 放弃 ...` 的 error 日志（绝不静默）。因此：**手机连续离线超过 1 小时，这期间到点的那几档会永久错过**
+   （典型场景：整晚关机/断网，次日早上 `1h` 与 `due` 两档已被放弃）。
+   取舍原因：`7d` 档的文案是「还有 7 天截止」，迟到 3 小时再推出去文案已经失真。
+2. **重试期可能重复触达**。若推送服务其实已收下、但 Worker 侧看到的是网络错误，同一档位会在窗口内
+   每分钟重试；通知 `tag` 相同只会替换不会堆叠，但可能出现重复振动。概率低。
+3. **Cron 粒度 ±1 分钟**：提醒时间点最多晚约 60 秒（Cloudflare Cron 最小间隔）。
+4. **`requireInteraction: true` 在 Firefox for Android 不被支持**（该属性主要 Chrome 系有效）。
+   Android 系统通知本身会留在通知栏直到用户划掉，所以「不自动消失」在真机上通常仍成立，但代码层面无法强制。
+5. **推送订阅被浏览器轮换（`pushsubscriptionchange`）不会自动重订阅**：旧订阅会因 410 被后端清理，
+   用户需要手动「关闭通知 → 开启通知」重建。
+6. **单用户、单 token**：没有账号体系，也没有速率限制。
+7. **前端没有「编辑标题/截止时间」入口**：接口 `PATCH {title, deadline}` 已支持，UI 只做了新建/完成/删除。
+8. **通知上的「完成」按钮**只有支持的平台才显示（Firefox Android 不显示 notification actions），
+   其它平台点通知体即打开应用。
+
 ## 安全说明
 
 - 所有密钥（VAPID 密钥对、API Token）一律用 `wrangler secret put`，**不进仓库**；`.dev.vars` 已被 `.gitignore` 忽略。

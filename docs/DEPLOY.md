@@ -197,19 +197,32 @@ curl "http://127.0.0.1:8787/cdn-cgi/local/scheduled"
 ```
 
 > 本地 `wrangler dev` 不会自动按 Cron 触发；线上部署后由 Cloudflare 每分钟自动调用。
-> 触发后看终端里的 `[cron] ... scanned=... pushed=...` 日志，以及
-> `npx wrangler d1 execute zuoleme-db --local --command "SELECT kind, sent FROM reminders"` 的 `sent` 变化。
+> 触发后看终端里的汇总行
+> `[cron] now=... scanned=... sent=... retried=... givenUp=... pushed=... failed=... subs=...`，
+> 以及 `npx wrangler d1 execute zuoleme-db --local --command "SELECT kind, sent, attempts FROM reminders"` 的 `sent` / `attempts` 变化。
 
 ---
 
-## 8. 更新部署
+## 8. 更新部署（⚠️ 先看有没有新迁移）
 
 ```bash
 git pull
+
+# ① 先看 worker/migrations/ 有没有新文件
+ls worker/migrations/
+
+# ② 有新迁移文件 → 必须先 apply，再 deploy（顺序不能反）
+npx wrangler d1 migrations apply zuoleme-db --remote
+
 npm install
 npm run build
 npx wrangler deploy
 ```
+
+> **只 deploy 不 apply 会发生什么**：新代码查了新列（例如 `0002_add_attempts.sql` 加的
+> `reminders.attempts`），线上 cron 每分钟报 `no such column: ...` 并停摆——
+> **手机上完全没有任何异常表现，用户以为「没事发生」**，只有 `npx wrangler tail` 才看得到错误。
+> 所以每次更新固定动作：先 `ls worker/migrations/`，有新增就先 `migrations apply --remote`，再 deploy。
 
 前端资源带 hash，Service Worker 会自动更新（`skipWaiting` + `clientsClaim`）。
 
