@@ -53,6 +53,9 @@ function toTodo(row: TodoRow): TodoWithNextFire {
   return {
     id: row.id,
     title: row.title,
+    // Worker 已停用：老表没有 content 列，也不支持重复规则，这里按默认值兜底
+    content: row.content ?? '',
+    repeat: { kind: 'none' },
     deadline: row.deadline,
     done: row.done === 1,
     createdAt: row.created_at,

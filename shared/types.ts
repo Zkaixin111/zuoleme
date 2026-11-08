@@ -1,9 +1,13 @@
 /**
- * 共享类型定义：前后端（前端 / Service Worker / Worker）都从这里取类型，
- * 保证接口契约只有一处真相。
+ * 共享类型定义：前端 / Service Worker /（保留的）Worker 都从这里取类型。
+ *
+ * 数据模型只有一处真相：
+ * - `title` 是「做什么」（必填，列表与通知里显示的就是它）；
+ * - `content` 是「具体内容」（可空，只在详情页显示，**绝不进通知**）；
+ * - `repeat` 描述这件事多久来一次，`deadline` 永远是「当前这一次」的截止时间。
  */
 
-/** 六档提醒类型 */
+/** 提醒档位 */
 export type ReminderKind = '7d' | '3d' | '1d' | '3h' | '1h' | 'due';
 
 /** 提醒计划项（纯逻辑输出） */
@@ -14,19 +18,36 @@ export interface ReminderPlanItem {
 }
 
 /**
- * 待办实体（前端本地 APK 版本的唯一数据模型）。
+ * 重复规则。
  *
- * 刻意保持最小：没有分类、优先级、备注等字段。
- * 「最近一条待发提醒时间」（nextFireAt）不是持久化字段，
- * 而是每次由 `planReminders(deadline, now)` 现算出来的派生值，
- * 因为本地方案里闹钟的真实排期在 Android AlarmManager 上，不在这里。
+ * 所有分支都以「当前这一次的 deadline」为锚点向后推进，见 `shared/repeat.ts`。
  */
+export type RepeatRule =
+  | { kind: 'none' }
+  | { kind: 'daily' }
+  /** 0 = 周日 … 6 = 周六，可多选，非空才算合法 */
+  | { kind: 'weekly'; weekdays: number[] }
+  /** 1..31；当月没有该日时取当月最后一天 */
+  | { kind: 'monthly'; dayOfMonth: number }
+  /** 固定间隔；最小 15 分钟、最大 30 天（在写入处校验） */
+  | { kind: 'interval'; intervalMs: number };
+
+/** 不重复（常量，避免到处写字面量对象） */
+export const NO_REPEAT: RepeatRule = { kind: 'none' };
+
+/** 待办实体（本地 APK 版本的唯一数据模型） */
 export interface Todo {
   id: string;
+  /** 做什么，必填，<= 100 字 */
   title: string;
-  /** 截止时间，毫秒时间戳 */
+  /** 具体内容，可空字符串，<= 2000 字 */
+  content: string;
+  /** 「当前这一次」的截止时间，毫秒时间戳 */
   deadline: number;
+  /** 一次性任务表示完成；重复任务恒为 false（完成 = 推进到下一次） */
   done: boolean;
+  /** 重复规则 */
+  repeat: RepeatRule;
   createdAt: number;
   updatedAt: number;
 }
@@ -44,6 +65,8 @@ export interface TodoWithNextFire extends Todo {
 export interface TodoRow {
   id: string;
   title: string;
+  /** 老表结构没有该列，Worker 侧按空串兜底 */
+  content?: string | null;
   deadline: number;
   done: number;
   created_at: number;
@@ -70,15 +93,15 @@ export interface SubRow {
   created_at: number;
 }
 
-/** Web Push 推送体（Service Worker 侧解析） */
+/** Web Push 推送体（Service Worker 侧解析，网页版历史实现保留） */
 export interface PushPayload {
   /** 通知标题（= 待办标题） */
   title: string;
-  /** 通知正文（= 距离截止时间的说明） */
+  /** 通知正文 */
   body: string;
   todoId: string;
   kind: ReminderKind;
-  /** 通知分组标签：todo:<id>:<kind>，保证不同档位/不同事项互不覆盖 */
+  /** 通知分组标签 */
   tag: string;
 }
 
@@ -94,14 +117,18 @@ export interface PushSubscriptionJson {
 /** POST /api/todos 请求体 */
 export interface CreateTodoBody {
   title: string;
+  content?: string;
   deadline: number;
+  repeat?: RepeatRule;
 }
 
 /** PATCH /api/todos/:id 请求体 */
 export interface UpdateTodoBody {
   title?: string;
+  content?: string;
   deadline?: number;
   done?: boolean;
+  repeat?: RepeatRule;
 }
 
 /** 统一错误响应 */
@@ -109,7 +136,7 @@ export interface ApiError {
   error: string;
 }
 
-/** 页面 ↔ Service Worker 的消息（notificationclick 时告知前端刷新/聚焦） */
+/** 页面 ↔ Service Worker 的消息 */
 export interface SwClientMessage {
   type: 'notification-clicked' | 'todo-completed';
   todoId: string;

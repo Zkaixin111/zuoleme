@@ -125,8 +125,10 @@ describe('earliestFireAt / reminderBody / reminderTag', () => {
 describe('decideReminderOutcome：推送失败不再永久丢弃（D1/D1b）', () => {
   const fireAt = NOW;
 
-  it('常量与产品口径一致：补发窗口 1 小时、最多 60 次', () => {
-    expect(REMINDER_GIVE_UP_MS).toBe(HOUR_MS);
+  it('常量与产品口径一致：补发窗口 24 小时、最多 60 次', () => {
+    // 窗口从 1 小时放宽到 24 小时：通知正文改成触发时刻现算的剩余时间后，
+    // 迟到多久文案都准确，没必要再因为「文案失真」丢弃提醒。
+    expect(REMINDER_GIVE_UP_MS).toBe(24 * HOUR_MS);
     expect(REMINDER_MAX_ATTEMPTS).toBe(60);
   });
 
@@ -161,7 +163,7 @@ describe('decideReminderOutcome：推送失败不再永久丢弃（D1/D1b）', (
     ).toBe('retry');
   });
 
-  it('边界：迟到恰好 1 小时 → give_up（不再补发，文案已失真）', () => {
+  it('边界：迟到恰好一整个补发窗口 → give_up（不再补发）', () => {
     expect(
       decideReminderOutcome({
         pushSucceeded: false,
@@ -172,7 +174,7 @@ describe('decideReminderOutcome：推送失败不再永久丢弃（D1/D1b）', (
     ).toBe('give_up');
   });
 
-  it('边界：迟到 1 小时减 1 毫秒 → 仍 retry', () => {
+  it('边界：迟到补发窗口减 1 毫秒 → 仍 retry', () => {
     expect(
       decideReminderOutcome({
         pushSucceeded: false,

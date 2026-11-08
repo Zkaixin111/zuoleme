@@ -1,4 +1,5 @@
-import type { ReminderKind, ReminderPlanItem } from './types';
+import type { ReminderKind, ReminderPlanItem, RepeatRule } from './types';
+import { cycleLengthMs } from './repeat';
 
 /**
  * 六档提醒的纯逻辑（前后端 / Worker 共用，无任何 IO）。
@@ -41,6 +42,58 @@ export const REMINDER_KINDS: readonly ReminderKind[] = REMINDER_OFFSETS.map((ite
  */
 export function isReminderKind(value: string): value is ReminderKind {
   return (REMINDER_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * 按重复周期收缩档位：**只保留提前量严格短于周期**的档位。
+ *
+ * 为什么必须收缩：一条「每天 9:00」的任务如果保留 7 天档，
+ * 上一周期的 7 天档与下一周期的 due 档会互相穿插，用户会在同一天收到
+ * 好几条指向不同实例的提醒，完全失去意义。周期短于提前量的档位本来就不可能成立。
+ *
+ * 推导结果（周期长度见 `cycleLengthMs`）：
+ * - `none`（周期无穷）→ 6 档全留；
+ * - `daily`（1 天）→ 1 天档不短于周期被剔除 → 3h / 1h / due；
+ * - `weekly`（7 天）→ 7 天档被剔除 → 3d / 1d / 3h / 1h / due；
+ * - `monthly`（按 30 天估）→ 6 档全留；
+ * - `interval(6h)` → 3h / 1h / due。
+ *
+ * @param repeat 重复规则
+ */
+export function reminderOffsetsFor(repeat: RepeatRule): readonly ReminderOffset[] {
+  const cycle = cycleLengthMs(repeat);
+  if (!Number.isFinite(cycle)) {
+    return REMINDER_OFFSETS;
+  }
+  if (cycle <= 0) {
+    return REMINDER_OFFSETS.filter((item) => item.kind === 'due');
+  }
+  return REMINDER_OFFSETS.filter((item) => item.offsetMs < cycle);
+}
+
+/**
+ * 按重复规则生成提醒计划（`planReminders` 的重复任务版本）。
+ *
+ * `planReminders` 的签名与行为保持不变——一次性任务的旧语义不能被改坏。
+ *
+ * @param deadline 本次实例的截止时间
+ * @param repeat 重复规则
+ * @param now 当前时间
+ */
+export function planRemindersFor(deadline: number, repeat: RepeatRule, now: number): ReminderPlanItem[] {
+  if (!Number.isFinite(deadline) || !Number.isFinite(now)) {
+    return [];
+  }
+
+  const plans: ReminderPlanItem[] = [];
+  for (const { kind, offsetMs } of reminderOffsetsFor(repeat)) {
+    const fireAt = deadline - offsetMs;
+    if (fireAt > now) {
+      plans.push({ kind, fireAt });
+    }
+  }
+  plans.sort((a, b) => a.fireAt - b.fireAt);
+  return plans;
 }
 
 /**
@@ -106,12 +159,13 @@ export function reminderTag(todoId: string, kind: ReminderKind): string {
 }
 
 /**
- * 补发窗口：提醒过了 fire_at 之后最多再补发 1 小时。
+ * 补发窗口：提醒过了 fire_at 之后最多再补发 **24 小时**。
  *
- * 为什么不是无限重试：`7d` 档位的文案是「还有 7 天截止」，如果过了点 3 小时才推出去，
- * 文案已经失真；1 小时内补上仍然有意义，超过就放弃（并记 error 日志，不做静默丢弃）。
+ * 历史上这里是 1 小时，理由是「7d 档的文案是『还有 7 天截止』，迟到 3 小时文案就失真」。
+ * 现在通知正文是**触发时刻现算的剩余时间**（见 Kotlin 侧 remainingText），迟到多久文案都准确，
+ * 所以窗口放宽到 24 小时：晚上关机、第二天早上开机仍能补上昨晚该响的提醒。
  */
-export const REMINDER_GIVE_UP_MS = 60 * 60 * 1000;
+export const REMINDER_GIVE_UP_MS = 24 * 60 * 60 * 1000;
 
 /** 单条提醒最多尝试次数（每分钟一轮，60 次≈1 小时，与补发窗口对齐） */
 export const REMINDER_MAX_ATTEMPTS = 60;

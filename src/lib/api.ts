@@ -1,25 +1,38 @@
-import type { CreateTodoBody, Todo, UpdateTodoBody } from '../../shared/types';
+import {
+  MAX_INTERVAL_MS,
+  MIN_INTERVAL_MS,
+  isValidRepeatRule,
+  nextOccurrence,
+  normalizeRepeatRule,
+  normalizeWeekdays,
+} from '../../shared/repeat';
+import type { CreateTodoBody, RepeatRule, Todo, UpdateTodoBody } from '../../shared/types';
 
 /**
  * 本地待办存储（APK 版本）。
  *
- * 历史包袱说明：这个文件以前是 Cloudflare Worker 的 HTTP 客户端，
- * 现在整个应用**不联网**，所以同名模块退化成「localStorage 仓储层」，
- * 对外仍然暴露 `api.listTodos / createTodo / updateTodo / deleteTodo` 四个方法，
- * 让 UI 层不需要关心数据从哪来。
+ * 数据只有一处真相：`localStorage` 的 `zuoleme.todos.v2`。
+ * 结构是 `{ version: 2, todos: Todo[] }`。
  *
- * 数据只有一处真相：localStorage 的 `zuoleme.todos.v1`。
- * 结构是 `{ version: 1, todos: Todo[] }`，带 version 是为了以后能平滑迁移。
+ * 迁移策略（**不做破坏性迁移**）：v2 不存在时读 v1，逐条补上
+ * `content: ''` 与 `repeat: { kind: 'none' }` 后写入 v2，**v1 原样保留不删**。
+ * 用户数据丢失是不可接受事故，留一份旧数据比省那点空间重要得多。
  */
 
-/** localStorage 键名：改了它等于清空用户数据，务必谨慎 */
-export const STORAGE_KEY = 'zuoleme.todos.v1';
+/** 当前存储键 */
+export const STORAGE_KEY = 'zuoleme.todos.v2';
 
-/** 当前存储结构版本 */
-const STORAGE_VERSION = 1;
+/** 旧版本存储键（只读，永远不删） */
+export const LEGACY_STORAGE_KEY = 'zuoleme.todos.v1';
 
-/** 标题最大长度（与输入框 maxLength 一致） */
-export const TITLE_MAX_LENGTH = 200;
+/** 存储结构版本 */
+export const STORAGE_VERSION = 2;
+
+/** 标题最大长度 */
+export const TITLE_MAX_LENGTH = 100;
+
+/** 内容最大长度 */
+export const CONTENT_MAX_LENGTH = 2000;
 
 /** 存储层错误（消息可直接展示给用户） */
 export class StorageError extends Error {
@@ -38,8 +51,7 @@ interface StoredState {
 /**
  * 生成待办 id。
  *
- * 优先用 `crypto.randomUUID()`（Capacitor WebView 里可用），
- * 老 WebView 回退到「时间戳 + 随机数」的组合，保证同一毫秒内也不重复。
+ * 优先 `crypto.randomUUID()`（Capacitor WebView 可用），老 WebView 回退到时间戳 + 随机数。
  */
 function createId(): string {
   const cryptoApi = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : undefined;
@@ -51,98 +63,72 @@ function createId(): string {
 }
 
 /**
- * 类型守卫：判断一个未知值是否是合法的 Todo。
+ * 读取某个键的原始字符串。
  *
- * 存储可能被手工改坏（用户清缓存、旧版本残留），
- * 遇到脏数据时**丢弃单条**而不是整体崩溃。
- *
- * @param value 待判定的未知值
+ * @param key localStorage 键
+ * @throws StorageError localStorage 不可用
  */
-function isTodo(value: unknown): value is Todo {
-  if (typeof value !== 'object' || value === null) {
-    return false;
+function readRaw(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    throw new StorageError('无法访问本机存储，请检查系统是否禁止了应用存储权限');
   }
-  const candidate = value as Partial<Todo>;
-  return (
-    typeof candidate.id === 'string' &&
-    candidate.id.length > 0 &&
-    typeof candidate.title === 'string' &&
-    typeof candidate.deadline === 'number' &&
-    Number.isFinite(candidate.deadline) &&
-    typeof candidate.done === 'boolean' &&
-    typeof candidate.createdAt === 'number' &&
-    Number.isFinite(candidate.createdAt) &&
-    typeof candidate.updatedAt === 'number' &&
-    Number.isFinite(candidate.updatedAt)
-  );
 }
 
 /**
- * 把任意对象规整成 Todo（补默认值、剔除多余字段）。
+ * 把任意一条数据规整成 Todo。
+ *
+ * **刻意宽松**：老数据没有 content / repeat，缺字段就补默认值，绝不因此丢弃整条待办。
+ * 只有「id / title / deadline 缺失或类型错误」才判定为脏数据。
  *
  * @param value 原始值
- * @returns 合法 Todo；不合法返回 null
  */
 function normalizeTodo(value: unknown): Todo | null {
-  if (!isTodo(value)) {
+  if (typeof value !== 'object' || value === null) {
     return null;
   }
+  const candidate = value as Partial<Todo>;
+
+  if (typeof candidate.id !== 'string' || candidate.id.length === 0) {
+    return null;
+  }
+  if (typeof candidate.title !== 'string') {
+    return null;
+  }
+  if (typeof candidate.deadline !== 'number' || !Number.isFinite(candidate.deadline)) {
+    return null;
+  }
+
+  const now = Date.now();
   return {
-    id: value.id,
-    title: value.title,
-    deadline: value.deadline,
-    done: value.done,
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
+    id: candidate.id,
+    title: candidate.title,
+    content: typeof candidate.content === 'string' ? candidate.content : '',
+    deadline: candidate.deadline,
+    done: candidate.done === true,
+    repeat: normalizeRepeatRule(candidate.repeat),
+    createdAt: typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)
+      ? candidate.createdAt
+      : now,
+    updatedAt: typeof candidate.updatedAt === 'number' && Number.isFinite(candidate.updatedAt)
+      ? candidate.updatedAt
+      : now,
   };
 }
 
 /**
- * 待办排序：未完成在前 → 截止时间升序 → 创建时间升序。
+ * 解析一段存储文本。
  *
- * 排序规则写在存储层，保证每次读出来的顺序完全一致（常驻卡片依赖「第一条」语义）。
+ * 兼容三种历史形态：`{version, todos}`、裸数组、以及损坏 JSON（返回空数组）。
  *
- * @param todos 待排序数组
- * @returns 排序后的新数组
+ * @param raw 原始字符串
  */
-export function sortTodos(todos: readonly Todo[]): Todo[] {
-  return [...todos].sort((a, b) => {
-    if (a.done !== b.done) {
-      return a.done ? 1 : -1;
-    }
-    if (a.deadline !== b.deadline) {
-      return a.deadline - b.deadline;
-    }
-    if (a.createdAt !== b.createdAt) {
-      return a.createdAt - b.createdAt;
-    }
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
-}
-
-/**
- * 读取全部待办。
- *
- * @returns 按「未完成在前、截止时间升序、创建时间升序」排好序的待办数组
- * @throws StorageError 当 localStorage 不可用（隐私模式 / 配额异常）
- */
-export function readTodos(): Todo[] {
-  let raw: string | null = null;
-  try {
-    raw = window.localStorage.getItem(STORAGE_KEY);
-  } catch {
-    throw new StorageError('无法访问本机存储，请检查系统是否禁止了应用存储权限');
-  }
-
-  if (raw === null || raw.trim().length === 0) {
-    return [];
-  }
-
+function parseTodos(raw: string): Todo[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // 数据损坏：不清空用户数据，先按空列表处理，下次写入时覆盖
     return [];
   }
 
@@ -162,14 +148,59 @@ export function readTodos(): Todo[] {
     seen.add(todo.id);
     todos.push(todo);
   }
-  return sortTodos(todos);
+  return todos;
+}
+
+/**
+ * 待办排序：未完成在前 → 截止时间升序 → 创建时间升序。
+ *
+ * @param todos 待排序数组
+ */
+export function sortTodos(todos: readonly Todo[]): Todo[] {
+  return [...todos].sort((a, b) => {
+    if (a.done !== b.done) {
+      return a.done ? 1 : -1;
+    }
+    if (a.deadline !== b.deadline) {
+      return a.deadline - b.deadline;
+    }
+    if (a.createdAt !== b.createdAt) {
+      return a.createdAt - b.createdAt;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+/**
+ * 读取全部待办（含 v1 → v2 迁移）。
+ *
+ * @returns 排好序的待办数组
+ * @throws StorageError localStorage 不可用
+ */
+export function readTodos(): Todo[] {
+  const current = readRaw(STORAGE_KEY);
+  if (current !== null && current.trim().length > 0) {
+    return sortTodos(parseTodos(current));
+  }
+
+  const legacy = readRaw(LEGACY_STORAGE_KEY);
+  if (legacy !== null && legacy.trim().length > 0) {
+    const migrated = parseTodos(legacy);
+    if (migrated.length > 0) {
+      // 写入 v2；v1 保持原样，用户回退旧版本时数据仍在
+      writeTodos(migrated);
+    }
+    return sortTodos(migrated);
+  }
+
+  return [];
 }
 
 /**
  * 覆盖写入全部待办。
  *
- * @param todos 待写入的待办（函数内部会再排一次序）
- * @throws StorageError 写入失败（配额满 / 隐私模式）
+ * @param todos 待写入的待办
+ * @throws StorageError 写入失败
  */
 function writeTodos(todos: readonly Todo[]): void {
   const state: StoredState = { version: STORAGE_VERSION, todos: sortTodos(todos) };
@@ -181,10 +212,69 @@ function writeTodos(todos: readonly Todo[]): void {
 }
 
 /**
- * 本地待办仓储 API（方法名与旧 HTTP 客户端保持一致，UI 层无需改动调用方式）。
+ * 校验标题。
+ *
+ * @param title 原始标题
+ */
+function normalizeTitle(title: string): string {
+  const trimmed = title.trim();
+  if (trimmed.length === 0) {
+    throw new StorageError('请填写待办标题');
+  }
+  if (trimmed.length > TITLE_MAX_LENGTH) {
+    throw new StorageError(`标题不能超过 ${TITLE_MAX_LENGTH} 字`);
+  }
+  return trimmed;
+}
+
+/**
+ * 校验内容。
+ *
+ * @param content 原始内容
+ */
+function normalizeContent(content: string): string {
+  const trimmed = content.trim();
+  if (trimmed.length > CONTENT_MAX_LENGTH) {
+    throw new StorageError(`内容不能超过 ${CONTENT_MAX_LENGTH} 字`);
+  }
+  return trimmed;
+}
+
+/**
+ * 校验重复规则（结构 + 间隔上下限）。
+ *
+ * @param repeat 原始规则
+ */
+function validateRepeat(repeat: RepeatRule | undefined): RepeatRule {
+  if (repeat === undefined) {
+    return { kind: 'none' };
+  }
+  if (!isValidRepeatRule(repeat)) {
+    throw new StorageError('重复规则不合法');
+  }
+  // 注意顺序：必须先看**原始**规则里有没有选星期。
+  // `normalizeRepeatRule` 会把「空星期」悄悄降级成「不重复」，
+  // 那是读盘时的兜底策略；写入时这么做等于把用户的「每周」悄悄改掉，必须报错。
+  if (repeat.kind === 'weekly' && normalizeWeekdays(repeat.weekdays).length === 0) {
+    throw new StorageError('每周重复至少要选一天');
+  }
+  const normalized = normalizeRepeatRule(repeat);
+  if (normalized.kind === 'interval') {
+    if (normalized.intervalMs < MIN_INTERVAL_MS) {
+      throw new StorageError('重复间隔不能小于 15 分钟');
+    }
+    if (normalized.intervalMs > MAX_INTERVAL_MS) {
+      throw new StorageError('重复间隔不能大于 30 天');
+    }
+  }
+  return normalized;
+}
+
+/**
+ * 本地待办仓储 API。
  */
 export const api = {
-  /** 列出全部待办（同步读本机存储，包成 Promise 保持旧签名） */
+  /** 列出全部待办 */
   async listTodos(): Promise<Todo[]> {
     return readTodos();
   },
@@ -192,18 +282,13 @@ export const api = {
   /**
    * 新建待办。
    *
-   * @param body 标题与截止时间
-   * @returns 新建后的完整待办
-   * @throws StorageError 标题/截止时间非法，或写入失败
+   * @param body 标题 / 内容 / 截止时间 / 重复规则
    */
   async createTodo(body: CreateTodoBody): Promise<Todo> {
-    const title = body.title.trim();
-    if (title.length === 0) {
-      throw new StorageError('请填写待办内容');
-    }
-    if (title.length > TITLE_MAX_LENGTH) {
-      throw new StorageError(`内容不能超过 ${TITLE_MAX_LENGTH} 字`);
-    }
+    const title = normalizeTitle(body.title);
+    const content = normalizeContent(body.content ?? '');
+    const repeat = validateRepeat(body.repeat);
+
     if (!Number.isFinite(body.deadline)) {
       throw new StorageError('请选择截止时间');
     }
@@ -215,22 +300,25 @@ export const api = {
     const todo: Todo = {
       id: createId(),
       title,
+      content,
       deadline: body.deadline,
       done: false,
+      repeat,
       createdAt: now,
       updatedAt: now,
     };
-    const next = sortTodos([...readTodos(), todo]);
-    writeTodos(next);
+    writeTodos([...readTodos(), todo]);
     return todo;
   },
 
   /**
-   * 更新待办（完成状态 / 标题 / 截止时间）。
+   * 更新待办。
+   *
+   * 关键语义：**完成一个重复任务 = 把 deadline 推进到下一次**，`done` 保持 false。
+   * 只有一次性任务才会真的被标记为完成。
    *
    * @param id 待办 id
    * @param body 需要修改的字段
-   * @returns 更新后的待办
    * @throws StorageError 待办不存在或字段非法
    */
   async updateTodo(id: string, body: UpdateTodoBody): Promise<Todo> {
@@ -241,47 +329,52 @@ export const api = {
     }
 
     const current = todos[index];
-    const patch: UpdateTodoBody = {};
+    const patch: Partial<Todo> = {};
 
     if (body.title !== undefined) {
-      const title = body.title.trim();
-      if (title.length === 0) {
-        throw new StorageError('待办内容不能为空');
-      }
-      if (title.length > TITLE_MAX_LENGTH) {
-        throw new StorageError(`内容不能超过 ${TITLE_MAX_LENGTH} 字`);
-      }
-      patch.title = title;
+      patch.title = normalizeTitle(body.title);
     }
-
+    if (body.content !== undefined) {
+      patch.content = normalizeContent(body.content);
+    }
     if (body.deadline !== undefined) {
       if (!Number.isFinite(body.deadline)) {
         throw new StorageError('截止时间不合法');
       }
       patch.deadline = body.deadline;
     }
-
-    if (body.done !== undefined) {
-      patch.done = body.done;
+    if (body.repeat !== undefined) {
+      patch.repeat = validateRepeat(body.repeat);
     }
 
-    const updated: Todo = {
-      ...current,
-      ...patch,
-      updatedAt: Date.now(),
-    };
+    const now = Date.now();
+    const merged: Todo = { ...current, ...patch };
 
-    const next = todos.slice();
-    next[index] = updated;
-    writeTodos(next);
+    let updated: Todo;
+    if (body.done === true) {
+      const next = merged.repeat.kind === 'none'
+        ? null
+        : nextOccurrence(merged.deadline, merged.repeat, now);
+      if (next === null) {
+        // 一次性任务，或规则损坏：退化成「真的完成」，不把任务卡死
+        updated = { ...merged, done: true, updatedAt: now };
+      } else {
+        updated = { ...merged, deadline: next, done: false, updatedAt: now };
+      }
+    } else if (body.done === false) {
+      updated = { ...merged, done: false, updatedAt: now };
+    } else {
+      updated = { ...merged, updatedAt: now };
+    }
+
+    const nextTodos = todos.slice();
+    nextTodos[index] = updated;
+    writeTodos(nextTodos);
     return updated;
   },
 
   /**
    * 删除待办。
-   *
-   * 提醒由调用方在数据变化后全量重排（见 lib/reminder-bridge.ts），
-   * 所以这里不需要额外清理闹钟。
    *
    * @param id 待办 id
    */
@@ -292,5 +385,14 @@ export const api = {
       return;
     }
     writeTodos(next);
+  },
+
+  /**
+   * 按 id 取单条待办。
+   *
+   * @param id 待办 id
+   */
+  async getTodo(id: string): Promise<Todo | null> {
+    return readTodos().find((item) => item.id === id) ?? null;
   },
 };
