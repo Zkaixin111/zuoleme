@@ -34,6 +34,24 @@ data class AlarmRecord(
 )
 
 /**
+ * 常驻通知要显示的那一件事。
+ *
+ * **为什么由 JS 算好再传进来**：原生侧只有闹钟列表（[AlarmRecord]），它不知道哪条是
+ * 重复任务、哪条已经完成、哪条只是没设时间 —— 这些是业务规则，全在 JS 里
+ * （`src/lib/ongoing.ts` 的 `pickOngoingItem`）。原生只负责显示，不复制一份规则，
+ * 否则两边迟早不一致（比如「重复任务不算最近一件」这条改了一边忘了另一边）。
+ *
+ * @property todoId 待办 id（点通知时用它打开对应编辑页）
+ * @property title 通知标题（= 待办标题）
+ * @property deadline 截止时刻（epoch 毫秒），通知正文由它现算
+ */
+data class OngoingItem(
+    val todoId: String,
+    val title: String,
+    val deadline: Long
+)
+
+/**
  * 一次读盘的结果：记录本身 + 被丢弃的条数。
  *
  * `dropped` 是给界面用的可观测信号：不为 0 说明磁盘上的记录格式和当前解析器对不上，
@@ -84,6 +102,14 @@ object ReminderStore {
 
     /** 「用户点了哪条通知」的键（MainActivity 写，插件读一次即清空） */
     private const val KEY_PENDING_OPEN = "pending_open_todo"
+
+    /**
+     * 常驻通知内容的键。
+     *
+     * 刻意与提醒数组分开存：提醒是「派生数据」，可以整体丢弃重建；
+     * 常驻卡要在服务被系统重启（空 Intent）时重建，必须独立可读。
+     */
+    private const val KEY_ONGOING_ITEM = "ongoing_item"
 
     /** 闹钟广播 action 前缀 */
     const val ACTION_FIRE_PREFIX = "com.zkaixin.zuoleme.action.REMINDER_FIRE"
@@ -307,6 +333,58 @@ object ReminderStore {
             alarmManager.canScheduleExactAlarms()
         } else {
             true
+        }
+    }
+
+    /**
+     * 保存常驻通知要显示的那一件事（null = 没有要显示的，清空）。
+     *
+     * 落盘的原因：`START_STICKY` 的服务被系统杀掉后会用**空的 Intent** 重启，
+     * 那时拿不到任何参数，只能靠磁盘上的这份记录重建通知 —— 否则常驻卡会变成
+     * 「空白通知」或者干脆消失。
+     *
+     * @param context 任意 Context
+     * @param item 要显示的一件事，null 清除
+     */
+    fun saveOngoing(context: Context, item: OngoingItem?) {
+        val editor = prefs(context).edit()
+        if (item == null) {
+            editor.remove(KEY_ONGOING_ITEM)
+        } else {
+            val json = JSONObject()
+            json.put("todoId", item.todoId)
+            json.put("title", item.title)
+            json.put("deadline", item.deadline)
+            editor.putString(KEY_ONGOING_ITEM, json.toString())
+        }
+        editor.apply()
+    }
+
+    /**
+     * 读取常驻通知要显示的那一件事。
+     *
+     * 宽容解析：任何字段不合法都当作「没有」，宁可少一条常驻卡也不要显示一条错的。
+     *
+     * @param context 任意 Context
+     */
+    fun loadOngoing(context: Context): OngoingItem? {
+        val raw = prefs(context).getString(KEY_ONGOING_ITEM, null) ?: return null
+        if (raw.isEmpty()) {
+            return null
+        }
+        return try {
+            val json = JSONObject(raw)
+            val todoId = json.optString("todoId", "")
+            val title = json.optString("title", "").ifEmpty { DEFAULT_TITLE }
+            val deadline = json.optLong("deadline", 0L)
+            if (deadline <= 0L) {
+                null
+            } else {
+                OngoingItem(todoId = todoId, title = title, deadline = deadline)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "读取常驻通知内容失败，按「没有」处理", error)
+            null
         }
     }
 

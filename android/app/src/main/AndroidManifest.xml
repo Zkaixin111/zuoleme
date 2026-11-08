@@ -10,6 +10,10 @@
       - WAKE_LOCK                 Doze 唤醒后短暂持锁，保证通知能发出去
       - VIBRATE                   通知震动
       - INTERNET                  Capacitor WebView 加载本地资源需要该权限；应用代码不做任何网络请求
+      - FOREGROUND_SERVICE  /
+        FOREGROUND_SERVICE_SPECIAL_USE
+                                  常驻通知（最近一件事）需要前台服务；Android 14+ 还要在
+                                  <service> 上声明具体 type 与用途说明
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
@@ -18,6 +22,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:allowBackup="true"
@@ -67,6 +73,24 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!--
+          常驻通知的前台服务（通知栏显示「最近一件事」）。
+          - exported=false：不需要任何外部应用启动它；
+          - foregroundServiceType="specialUse"：本应用不属于 media/location/camera 任何一类，
+            只能用「特殊用途」并在下面用 <property> 写明用途 —— 这是 Google Play 的要求，
+            侧载安装同样要声明，否则 Android 14+ 直接抛 SecurityException。
+          - 注意 type 只有 "specialUse" 一个：多个 type 时 ServiceCompat.startForeground 必须逐个传，
+            这里只用一个更简单，也能过审。
+        -->
+        <service
+            android:name=".OngoingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="在通知栏常驻显示最近一件即将到期的待办" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -3,7 +3,8 @@
 > 输入**标题**和**具体内容**，选一个截止时间；应用在 **截止前 7 天 / 3 天 / 1 天 / 3 小时 / 1 小时** 以及 **到点** 各静音弹出一条提醒。
 > 每件事、每个档位都是独立一条通知，互不覆盖；通知里只显示标题和剩余时间，**具体内容点进去才看**。
 > 截止时间**可以不设**（「无期限」），提前提醒**也可以关掉**（只到点提醒一次）；默认仍然是提前提醒。
-> 最近一件**带截止时间的**未完成事项在应用顶部**常驻**显示剩余时间。
+> 最近一件**带截止时间的**未完成事项在应用顶部**常驻**显示剩余时间，**通知栏也常驻一条**（点进去就是它的编辑页）。
+> 已完成的待办移出主页，进「历史任务」页，按完成时间倒序。
 
 **纯本地 Android APK**（Capacitor 6 + Android 系统闹钟），侧载安装，不上架应用商店。
 
@@ -20,13 +21,17 @@
 | 新建待办 | **标题**（必填，≤100 字）+ **具体内容**（可空，≤2000 字）+ 截止时间（带 30 分钟 / 1 小时 / 3 小时 / 明天 9 点快捷选项），也可以直接选**「不设时间」** |
 | 无期限待办 | 只有标题和内容、没有截止时间：**不产生任何提醒**，单独归到列表最下面的「无期限」分组；周期任务必须有时间锚点，所以无期限时「重复」会被禁用 |
 | 提前提醒开关 | 默认**开**（六档按周期收缩）。关掉后这条待办**只在到点那一刻**提醒一次；重复任务的每个实例各提醒一次 |
-| 详情页 | 列表里只看标题与截止/倒计时；点开详情页才显示具体内容、截止时间、重复规则、提醒方式、状态，可编辑 / 完成 / 删除 |
+| 点待办直接编辑 | 列表里只看标题与截止/倒计时；**点整行直接进编辑页**（不再有只读详情页），改完保存即可；点左侧圆圈则直接标记完成 |
+| 长按批量删除 | 长按任意一行进入选择模式（顶部「已选 N 项 / 全选 / 取消」，底部红色「删除」），确认后逐条删除并**同时取消提醒**；滚动列表不会误触发 |
+| 返回手势 | 系统返回键 / 侧滑手势在子页面**返回上一页**（首页才退出应用）；另有右下角 48×48 浮动返回按钮，不依赖手势 |
+| 历史任务 | 已完成的待办移出主页，进「历史任务 · N」页：按**完成时间倒序**，显示「完成于 … · 原定 …」，可「恢复」或长按批量删除 |
 | 六档提醒 | 截止前 7 天、3 天、1 天、3 小时、1 小时、到点，共 6 条独立通知；**已过去的档位不补发**；关掉提前提醒则只剩「到点」 |
 | 静音横幅 | 高重要性渠道（能弹出横幅）+ 无声音 + 无震动 + 锁屏可见；不会打断音乐，也不会震手 |
 | 每件事单独通知 | 每条闹钟有独立整型 id = `hash(todoId + 档位 + 实例时刻)`，同时作为通知 id 与 PendingIntent requestCode，互不覆盖 |
-| 点通知直达 | 通知点开就是对应的详情页（原生侧记 `pending_open_todo`，JS 启动后取走并跳转） |
+| 点通知直达 | 通知点开就是对应的编辑页（原生侧记 `pending_open_todo`，JS 启动后取走并跳转） |
 | 重复任务 | 每天 / 每周（周几多选，至少留一天）/ 每月（几号，月底自动取当月最后一天）/ 每隔 N 天或 N 小时；「完成」= 推进到下一次，不是消失 |
-| 常驻卡片 | 顶部固定显示**最近一件带截止时间的**未完成事项 + 剩余时间（`3天2小时` / `45分钟` / `刚刚到点` / `已逾期 3天2小时`）+ 该实例还剩几档提醒；列表里还有无期限待办时提示「另有 N 件无期限」 |
+| 常驻卡片 | 顶部固定显示**最近一件带截止时间的**未完成事项：标题 22px 最醒目，第二行「今天 18:00 截止 · 还有 2 小时 13 分」（逾期整行转红并带小圆点），第三行「还有 N 档提醒」；列表里还有无期限待办时提示「另有 N 件无期限」 |
+| 通知栏常驻 | 前台服务在通知栏常驻一条「最近一件要做的一次性事情」（标题 + 剩余时间），点它直接进对应编辑页；**独立静音渠道 `ongoing`**，不弹横幅、不响、不显示角标 |
 | 重启后照常提醒 | 闹钟列表持久化在 `SharedPreferences`，`BootReceiver` 在 `BOOT_COMPLETED` / `LOCKED_BOOT_COMPLETED` / `QUICKBOOT_POWERON` / `MY_PACKAGE_REPLACED` 时重建；旧格式提醒会被**宽容解析**救回来（见下节） |
 | 断网可用 | 全部数据在本地，无需网络即可新建、查看、提醒 |
 | 运行检查 | 逐项显示「通知权限 / 准时触发 / 电池优化」状态，并一键跳转对应系统设置页；若磁盘上有旧提醒没能恢复，额外显示琥珀色提示条 |
@@ -44,6 +49,38 @@
 | 每月 | 约 30 天 | 六档 |
 | 每 N 天 / N 小时 | N | 只保留提前量短于 N 的档位（如每 6 小时 → 3h / 1h / due） |
 | 任意重复 + **关掉提前提醒** | — | 只有 due（到点那一刻） |
+
+### 返回键：为什么是「深度计数」而不是 WebView history
+
+本项目没有注册 Capacitor 的 `backButton` 监听，WebView 又是单页应用（视图由 React state 管，
+没有可后退的 history 条目），所以不拦的话系统返回键会**直接销毁 Activity** ——
+用户在编辑页、历史页按返回就等于退出应用。
+
+现在：
+
+- JS 在视图切换后调 `ReminderAlarm.setViewDepth({ depth })`（0 = 首页，1 = 子页面）；
+- `MainActivity.onBackPressed()` 里 `depth > 0` 就抛 `backRequested` 事件给 JS 并直接返回（不调 `super`），
+  否则 `super.onBackPressed()` 退出应用；
+- Plugin 实例用 `WeakReference` 挂静态引用，Bridge 没起来 / 没订阅时一律退回系统默认行为
+  （宁可退出应用，也不要让返回键没反应）。
+
+**为什么不用 `evaluateJavascript("history.back()")`**：那是异步的（要等 JS 执行完才知道有没有后退成功），
+而 `onBackPressed` 必须**同步**决定「拦还是放」。深度计数由 JS 主动写入，同步、无竞态。
+
+### 通知栏常驻卡：为什么由 JS 决定显示哪一条
+
+原生手里只有闹钟列表（`AlarmRecord`：id / todoId / title / deadline / fireAt），它不知道
+哪条是重复任务、哪条已完成、哪条只是没设时间。所以「显示哪一条」这条业务规则只有一份实现，
+在 `src/lib/ongoing.ts` 的 `pickOngoingItem` 里（一次性 + 未完成 + 有截止时间 + 时间最近），
+原生只负责显示。复制一份到 Kotlin 里迟早会两边不一致。
+
+三条实现约束（每条都是真机踩出来的）：
+
+1. 常驻通知必须用**独立渠道** `ongoing`（`IMPORTANCE_LOW`）：渠道重要级别创建后不可修改，
+   复用 `reminders_v3`（HIGH）会导致常驻通知一直弹横幅；
+2. `onStartCommand` 返回 `START_STICKY`，被系统回收后重建时拿到的是**空 Intent**，
+   内容必须从 `SharedPreferences`（键 `ongoing_item`）读回来；
+3. `onDestroy` 里**不调** `stopForeground`，否则重启路径上通知会先消失再出现（用户看到闪一下）。
 
 ### 排程名额怎么分配
 
@@ -112,11 +149,15 @@ Android APK（Capacitor 6，完全离线）
 ├── WebView：React 18 + TypeScript + Tailwind 3（Vite 构建，产物 dist/）
 │   ├── lib/api.ts             → localStorage 仓储层（zuoleme.todos.v2，含 v1 迁移）
 │   ├── lib/alarms.ts          → 待办 → 扁平闹钟列表（含重复任务 30 天展开，纯函数可单测）
+│   ├── lib/navigation.ts      → 视图类型与「返回该做什么」的判定（纯函数可单测）
+│   ├── lib/long-press.ts      → 长按状态机（滚动不误触、长按后吞掉 click，纯状态机可单测）
+│   ├── lib/ongoing.ts         → 挑出「通知栏常驻卡要显示哪一件事」（纯函数可单测）
 │   └── lib/reminder-bridge.ts → 调原生 ReminderAlarm 插件（Web 上自动降级为空操作）
 └── 原生层（Kotlin）
-    ├── ReminderAlarmPlugin.kt → JS 桥：scheduleAll / cancelAll / 权限三连 / getPendingOpen
-    ├── ReminderStore.kt       → SharedPreferences 持久化 + AlarmManager 排程
+    ├── ReminderAlarmPlugin.kt → JS 桥：scheduleAll / cancelAll / 权限三连 / getPendingOpen / setViewDepth / updateOngoing
+    ├── ReminderStore.kt       → SharedPreferences 持久化 + AlarmManager 排程 + 常驻卡内容落盘
     ├── ReminderNotifier.kt    → 通知渠道（reminders_v3，IMPORTANCE_HIGH + 静音）+ 发通知
+    ├── OngoingService.kt      → 前台服务：通知栏常驻「最近一件事」（渠道 ongoing，IMPORTANCE_LOW + 静音）
     ├── AlarmReceiver.kt       → 到点广播 → 现算剩余时间 → 发一条独立通知
     └── BootReceiver.kt        → 开机 / 升级后重建全部闹钟
 ```
@@ -142,8 +183,8 @@ shared/
   format.ts         # 倒计时 / 截止时间格式化纯函数
 src/
   main.tsx  App.tsx  index.css
-  components/       # HomeView / PinnedCard / TodoRow / DetailView / TodoEditor / RepeatPicker / HealthPanel
-  lib/              # api(localStorage) / alarms / reminder-bridge / group-todos / useNow / idb
+  components/       # HomeView / PinnedCard / TodoRow / TodoEditor / HistoryView / SelectionToolbar / FloatingBack / RepeatPicker / HealthPanel
+  lib/              # api(localStorage) / alarms / reminder-bridge / ongoing / navigation / long-press / history / group-todos / useNow / idb
   sw.ts             # 仅网页版使用；APK 内不注册 Service Worker
 android/            # Capacitor 生成的 Android 工程 + 自研提醒插件（Kotlin）
 tests/              # Vitest：重复规则、档位收缩、闹钟编译与配额、存储迁移、原生契约、旧格式宽容解析
@@ -161,7 +202,7 @@ npm install
 npm run dev            # 浏览器里调试界面（此环境无系统提醒，运行检查会提示「仅 APK 可用」）
 npm run typecheck      # 前端 + Service Worker + Worker 三份 tsconfig
 npm run build          # 类型检查 + vite build（产物 dist/）
-npm test               # Vitest（437 个用例）
+npm test               # Vitest（535 个用例）
 ```
 
 ## 构建 APK
@@ -241,11 +282,17 @@ cd android
 6. **未持久化「已触发」状态**：闹钟交给系统后应用被杀也不影响触发；但**同一条提醒不会补发**，
    如果手机在触发时刻处于关机状态，该档位会直接跳过（与「已过去的档位不补发」的产品语义一致）。
 7. **通知里不放具体内容**：摘要只显示标题 + 剩余时间。这是刻意的——锁屏通知栏不适合放长正文，
-   也不该把私事摊在锁屏上；正文点开详情页看。
+   也不该把私事摊在锁屏上；正文点开**编辑页**看。
 8. **国产 ROM 的后台管控无法从应用内绕过**：只能靠用户在系统设置里白名单，运行检查面板已给出提示。
-9. **`INTERNET` 权限保留**：Capacitor 的 WebView 加载本地资源需要它，应用代码不做任何网络请求。
-10. **未做**：分类、优先级、搜索、统计、深色模式切换、iOS。
-11. **「今天 / 明天 / 本周」的分组边界用固定 `86_400_000` 偏移**，不是日历计算。
+9. **通知栏常驻卡不保证一直活着**：它靠前台服务（`OngoingService`，`foregroundServiceType=specialUse`，
+   `START_STICKY`）。realme / OPPO / vivo 这类 ROM 的「智能省电 / 后台冻结」可能在息屏一段时间后
+   把前台服务也杀掉，**此时常驻卡会消失，但提醒照旧** —— 提醒走的是
+   `AlarmManager.setExactAndAllowWhileIdle`，与这个服务无关。回到应用前台会自动重新拉起常驻卡。
+   另外 Android 12+ 不允许**后台**启动前台服务，所以只在前台刷新（数据变化 / 切回前台）；
+   息屏期间倒计时文案不会自己走秒，重新打开应用才刷新。
+10. **`INTERNET` 权限保留**：Capacitor 的 WebView 加载本地资源需要它，应用代码不做任何网络请求。
+11. **未做**：分类、优先级、搜索、统计、深色模式切换、iOS。
+12. **「今天 / 明天 / 本周」的分组边界用固定 `86_400_000` 偏移**，不是日历计算。
     中国全境不使用夏令时，一天恒等于 24 小时；换成日历计算只会徒增复杂度（代码里也有注释说明）。
 
 ## 安全说明

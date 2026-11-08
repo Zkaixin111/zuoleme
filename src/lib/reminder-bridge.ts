@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
+import type { OngoingItem } from './ongoing';
 import type { Todo } from '../../shared/types';
 import { compileAlarmsWithStats } from './alarms';
 
@@ -85,6 +86,12 @@ interface ReminderAlarmPlugin {
    * 由 JS 决定是退出选择模式、确认放弃编辑，还是回首页。
    */
   addListener(eventName: 'backRequested', listenerFunc: () => void): Promise<PluginListenerHandle>;
+  /**
+   * 更新通知栏常驻通知。
+   *
+   * `item` 为 null = 收起常驻通知（没有要显示的事）。
+   */
+  updateOngoing(options: { item: OngoingItem | null }): Promise<void>;
 }
 
 /** 插件代理对象；在 Web 上调用会抛「未实现」，因此所有调用都先判平台 */
@@ -308,5 +315,25 @@ export async function onBackRequested(handler: () => void): Promise<() => void> 
     };
   } catch {
     return () => undefined;
+  }
+}
+
+/**
+ * 更新通知栏常驻通知（「最近一件事」）。
+ *
+ * **只能在应用处于前台时调用**：Android 12+ 从后台启动前台服务会被系统拒绝
+ * （`ForegroundServiceStartNotAllowedException`），原生侧会吞掉异常并记日志，
+ * 下次回到前台会自然重试。**提醒本身不受影响**（提醒走 AlarmManager）。
+ *
+ * @param item 要常驻显示的那一件事；null = 收起常驻通知
+ */
+export async function updateOngoing(item: OngoingItem | null): Promise<void> {
+  if (!isNativePlatform()) {
+    return;
+  }
+  try {
+    await ReminderAlarm.updateOngoing({ item });
+  } catch {
+    // 常驻卡是「锦上添花」，失败不影响提醒与数据
   }
 }

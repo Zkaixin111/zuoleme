@@ -9,6 +9,7 @@ import { TodoEditor } from './components/TodoEditor';
 import { api, sortTodos } from './lib/api';
 import { remainingReminderCount } from './lib/alarms';
 import { decideBack, viewDepth, type View } from './lib/navigation';
+import { pickOngoingItem } from './lib/ongoing';
 import {
   consumePendingOpen,
   isNativePlatform,
@@ -18,6 +19,7 @@ import {
   requestNotificationPermission,
   setViewDepth,
   syncAlarms,
+  updateOngoing,
   type PermissionSnapshot,
 } from './lib/reminder-bridge';
 import { useNow } from './lib/useNow';
@@ -69,6 +71,9 @@ export default function App(): JSX.Element {
   const applyTodos = useCallback(async (list: readonly Todo[]): Promise<void> => {
     const sorted = sortTodos(list);
     setTodos(sorted);
+    // 常驻通知：只显示「最近一件一次性的事」，规则在 pickOngoingItem 里（见该函数注释：
+    // 原生只有闹钟列表，不知道哪条是重复任务，所以这件事必须由 JS 算）
+    void updateOngoing(pickOngoingItem(sorted));
     const result = await syncAlarms(sorted);
     setScheduledCount(result.scheduled);
     setTruncatedCount(result.truncated);
@@ -205,6 +210,8 @@ export default function App(): JSX.Element {
   useEffect(() => {
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'visible') {
+        // load → applyTodos 里会顺带刷新常驻通知：
+        // 前台是唯一允许启动前台服务的时机（后台启动会被 Android 12+ 拒绝）
         void load();
         void refreshPermissions();
         void openPendingNotification();

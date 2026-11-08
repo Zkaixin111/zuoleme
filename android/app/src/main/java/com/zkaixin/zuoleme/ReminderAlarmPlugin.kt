@@ -237,6 +237,61 @@ class ReminderAlarmPlugin : Plugin() {
     }
 
     /**
+     * 更新通知栏里的常驻通知（「最近一件事」）。
+     *
+     * JS 调用：`ReminderAlarm.updateOngoing({ item: { todoId, title, deadline } | null })`
+     *
+     * **为什么由 JS 决定显示哪一条**：原生手里只有闹钟列表，它不知道哪条是重复任务、
+     * 哪条已经完成、哪条只是没设时间 —— 这些是业务规则，只应该有一份实现
+     * （`src/lib/ongoing.ts` 里的 `pickOngoingItem`）。原生只负责显示，
+     * 否则两边迟早会不一致（比如「重复任务不算最近一件」改了一边忘了另一边）。
+     *
+     * **只能在应用处于前台时调用**：Android 12+ 从后台启动前台服务会抛
+     * `ForegroundServiceStartNotAllowedException`。这里吞掉并记日志，
+     * 下次回到前台（visibilitychange → 重新排程）会自然重试。
+     * **提醒本身不受影响**：提醒走 AlarmManager，与这个常驻服务无关。
+     */
+    @PluginMethod
+    fun updateOngoing(call: PluginCall) {
+        // JS 传 `item: null` 时 getObject 返回 null（JSON null 走 defaultValue 分支）
+        val raw = call.getObject("item")
+        val item = if (raw == null) null else parseOngoingItem(raw)
+        try {
+            ReminderStore.saveOngoing(context, item)
+            if (item == null) {
+                OngoingService.stop(context)
+            } else {
+                OngoingService.start(context)
+            }
+        } catch (error: Exception) {
+            // 启动被系统拒绝（后台启动限制 / 通知被关闭）不算致命错误
+            Log.w(TAG, "更新常驻通知失败，下次回到前台会重试", error)
+        }
+        call.resolve()
+    }
+
+    /**
+     * 把 JS 传来的对象解析成 [OngoingItem]；任何字段不合法都返回 null（= 不显示）。
+     *
+     * @param raw JS 传来的 `item` 对象
+     */
+    private fun parseOngoingItem(raw: JSObject): OngoingItem? {
+        val deadline = raw.optLong("deadline", 0L)
+        if (deadline <= 0L) {
+            return null
+        }
+        val title = raw.optString("title", "").trim()
+        if (title.isEmpty()) {
+            return null
+        }
+        return OngoingItem(
+            todoId = raw.optString("todoId", ""),
+            title = title,
+            deadline = deadline
+        )
+    }
+
+    /**
      * 通知权限请求结果的回调（由 Capacitor 反射调用）。
      *
      * @param call 被挂起的原始调用
