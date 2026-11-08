@@ -17,6 +17,7 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
+import java.lang.ref.WeakReference
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -39,6 +40,65 @@ import org.json.JSONObject
     ]
 )
 class ReminderAlarmPlugin : Plugin() {
+
+    /**
+     * JS 侧当前的视图深度：0 = 首页，>= 1 = 子页面（编辑页 / 历史页）。
+     *
+     * 由 `App.tsx` 在视图切换后调用 `setViewDepth` 写入，`MainActivity.onBackPressed`
+     * 读它来决定「拦下来交给 JS」还是「交回系统退出应用」。
+     */
+    private var viewDepth: Int = 0
+
+    /**
+     * 把插件实例挂到静态引用上，供 `MainActivity` 在返回键里回调。
+     *
+     * 用 `WeakReference` 而不是直接持有：Activity 重建时旧实例应该能被回收，
+     * 拿强引用会在旋转 / 多窗口切换时泄漏整个 Bridge。
+     */
+    override fun load() {
+        instance = WeakReference(this)
+    }
+
+    override fun handleOnDestroy() {
+        if (instance?.get() === this) {
+            instance = null
+        }
+        super.handleOnDestroy()
+    }
+
+    /**
+     * 上报当前视图深度。
+     *
+     * JS 调用：`ReminderAlarm.setViewDepth({ depth: 0 | 1 })`
+     *
+     * **为什么不靠 WebView history 判断返回**：本项目没有注册 Capacitor 的
+     * `backButton` 监听，WebView 又没有可用的前进/后退栈（单页应用，视图由 React
+     * state 管），所以系统返回键会一路走到 `Activity.onBackPressed` 然后**直接退出应用**。
+     * 另一种写法是 `onBackPressed` 里 `evaluateJavascript("history.back()")`，
+     * 但那是异步的、还要处理回调时序，且与 React 状态不同步；
+     * 维护一个由 JS 主动写入的深度计数是同步的、无竞态的。
+     */
+    @PluginMethod
+    fun setViewDepth(call: PluginCall) {
+        val depth = call.getInt("depth") ?: 0
+        viewDepth = if (depth > 0) depth else 0
+        call.resolve()
+    }
+
+    /**
+     * 通知 JS「用户按了返回」，返回是否成功通知到。
+     *
+     * 内部方法：只给 [notifyBackRequested] 调用，调用方已确认 depth > 0。
+     */
+    private fun dispatchBackRequested(): Boolean {
+        return try {
+            notifyListeners(EVENT_BACK_REQUESTED, JSObject())
+            true
+        } catch (error: Exception) {
+            Log.w(TAG, "通知 JS 返回事件失败，交回系统处理", error)
+            false
+        }
+    }
 
     /**
      * 全量替换所有提醒。
@@ -284,13 +344,39 @@ class ReminderAlarmPlugin : Plugin() {
             PackageManager.PERMISSION_GRANTED
     }
 
-    private companion object {
-        const val TAG = "ReminderAlarmPlugin"
+    companion object {
+        private const val TAG = "ReminderAlarmPlugin"
 
         /** 通知权限的 Capacitor 别名（对应类上的 @Permission） */
-        const val ALIAS_NOTIFICATIONS = "notifications"
+        private const val ALIAS_NOTIFICATIONS = "notifications"
 
         /** 标题兜底文案 */
-        const val DEFAULT_TITLE = "做了么"
+        private const val DEFAULT_TITLE = "做了么"
+
+        /** 返回键事件名，JS 侧 `ReminderAlarm.addListener('backRequested', …)` 对应它 */
+        const val EVENT_BACK_REQUESTED = "backRequested"
+
+        /** 当前插件实例（Bridge 创建后写入，销毁时清空） */
+        @Volatile
+        private var instance: WeakReference<ReminderAlarmPlugin>? = null
+
+        /**
+         * 当前视图深度；插件还没起来（Bridge 未就绪 / 界面还没渲染）时按 0 处理，
+         * 也就是「交回系统」，宁可退出应用也不要吞掉返回键。
+         */
+        fun currentViewDepth(): Int {
+            val plugin = instance?.get() ?: return 0
+            return plugin.viewDepth
+        }
+
+        /**
+         * 让 JS 处理这次返回。
+         *
+         * @return true = JS 已接手（调用方不要再调 super）；false = 没人接手，交回系统
+         */
+        fun notifyBackRequested(): Boolean {
+            val plugin = instance?.get() ?: return false
+            return plugin.dispatchBackRequested()
+        }
     }
 }

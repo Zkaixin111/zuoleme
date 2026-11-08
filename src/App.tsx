@@ -8,13 +8,15 @@ import { type PinnedTodo } from './components/PinnedCard';
 import { TodoEditor } from './components/TodoEditor';
 import { api, sortTodos } from './lib/api';
 import { remainingReminderCount } from './lib/alarms';
-import { decideBack, type View } from './lib/navigation';
+import { decideBack, viewDepth, type View } from './lib/navigation';
 import {
   consumePendingOpen,
   isNativePlatform,
+  onBackRequested,
   openNotificationSettings,
   readPermissionState,
   requestNotificationPermission,
+  setViewDepth,
   syncAlarms,
   type PermissionSnapshot,
 } from './lib/reminder-bridge';
@@ -131,6 +133,43 @@ export default function App(): JSX.Element {
     setSelectedIds(new Set());
     setEditorDirty(false);
   }, [view.kind]);
+
+  /**
+   * 把视图深度上报给原生。
+   *
+   * 原生 `MainActivity.onBackPressed` 靠这个数字决定「拦下来交给 JS」还是「退出应用」。
+   * 首页（depth 0）必须如实上报，否则用户按返回会被一个空动作卡住。
+   */
+  useEffect(() => {
+    void setViewDepth(viewDepth(view));
+  }, [view]);
+
+  // 原生回调永远指向「最新的」goBack：用 ref 兜住，避免每次渲染都重新订阅
+  const goBackRef = useRef<() => void>(goBack);
+  goBackRef.current = goBack;
+
+  /**
+   * 订阅系统返回键 / 侧滑手势。
+   *
+   * 没有这个订阅时，Android 会直接销毁 Activity —— 用户在编辑页按返回就等于退出应用。
+   */
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      const off = await onBackRequested(() => goBackRef.current());
+      if (cancelled) {
+        off();
+        return;
+      }
+      unsubscribe = off;
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
 
   // 首次进入：读本机数据 → 排提醒 → 缺通知权限就主动申请一次（每次冷启动最多一次）
   useEffect(() => {

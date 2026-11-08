@@ -7,11 +7,12 @@ import com.getcapacitor.BridgeActivity
 /**
  * 应用唯一的 Activity：承载 Capacitor WebView。
  *
- * 三件必须在这里做的事：
+ * 四件必须在这里做的事：
  * 1. `registerPlugin` 必须在 `super.onCreate` **之前**调用，否则 Capacitor 建 Bridge 时
  *    还看不到我们的插件，JS 侧 `registerPlugin('ReminderAlarm')` 就会拿到空实现；
  * 2. 创建通知渠道（Android 8+ 没有渠道的通知会被系统丢弃）；
- * 3. 用户点通知进来时，把待办 id 记下来，供 JS 启动后跳转到详情页。
+ * 3. 用户点通知进来时，把待办 id 记下来，供 JS 启动后跳转到编辑页；
+ * 4. 系统返回键 / 侧滑手势：子页面上拦下来交给 JS，首页才真的退出应用。
  */
 class MainActivity : BridgeActivity() {
 
@@ -20,6 +21,28 @@ class MainActivity : BridgeActivity() {
         super.onCreate(savedInstanceState)
         ReminderNotifier.ensureChannel(this)
         captureNotificationOpen(intent)
+    }
+
+    /**
+     * 返回键 / 侧滑返回手势的统一入口。
+     *
+     * 为什么必须重写：本项目没有注册 Capacitor 的 `backButton` 监听，WebView 又是单页应用
+     * （视图由 React state 管，没有可后退的 history 条目），所以不拦的话系统返回键会
+     * **直接销毁 Activity**，用户在编辑页/历史页按返回就等于退出应用。
+     *
+     * 为什么不用 `webView.evaluateJavascript("history.back()")`：那是异步的（要等 JS 执行
+     * 完才知道有没有后退成功），而 `onBackPressed` 必须同步决定「拦还是放」；
+     * 这里用一个由 JS 主动上报的深度计数（`setViewDepth`）判断，同步、无竞态。
+     *
+     * 兜底：Bridge 未就绪或没人接手时一律 `super.onBackPressed()`，
+     * 宁可退出应用也不要让用户按返回没反应。
+     */
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (ReminderAlarmPlugin.currentViewDepth() > 0 && ReminderAlarmPlugin.notifyBackRequested()) {
+            return
+        }
+        super.onBackPressed()
     }
 
     override fun onNewIntent(intent: Intent) {

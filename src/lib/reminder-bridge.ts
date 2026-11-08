@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import type { PluginListenerHandle } from '@capacitor/core';
 import type { Todo } from '../../shared/types';
 import { compileAlarmsWithStats } from './alarms';
 
@@ -71,6 +72,19 @@ interface ReminderAlarmPlugin {
   openNotificationSettings(): Promise<void>;
   /** 取走并清空「用户点了哪条通知」（用于打开对应详情页） */
   getPendingOpen(): Promise<{ todoId?: string | null }>;
+  /**
+   * 上报当前视图深度（0 = 首页，>= 1 = 子页面）。
+   *
+   * 原生侧用它决定返回键是「交给 JS 返回上一页」还是「交给系统退出应用」。
+   */
+  setViewDepth(options: { depth: number }): Promise<void>;
+  /**
+   * 订阅「用户按了返回键」。
+   *
+   * 原生 `MainActivity.onBackPressed` 在深度 > 0 时抛 `backRequested` 事件，
+   * 由 JS 决定是退出选择模式、确认放弃编辑，还是回首页。
+   */
+  addListener(eventName: 'backRequested', listenerFunc: () => void): Promise<PluginListenerHandle>;
 }
 
 /** 插件代理对象；在 Web 上调用会抛「未实现」，因此所有调用都先判平台 */
@@ -255,5 +269,44 @@ export async function consumePendingOpen(): Promise<string | null> {
     return todoId !== null && todoId.length > 0 ? todoId : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 上报当前视图深度，供原生返回键判断。
+ *
+ * 0 = 首页（返回键应该退出应用），>= 1 = 子页面（返回键应该回上一页）。
+ * Web 上没有原生返回键，安全空操作。
+ *
+ * @param depth 视图深度
+ */
+export async function setViewDepth(depth: number): Promise<void> {
+  if (!isNativePlatform()) {
+    return;
+  }
+  try {
+    await ReminderAlarm.setViewDepth({ depth: depth > 0 ? depth : 0 });
+  } catch {
+    // 上报失败只影响返回键：仍然可以点右下角的浮动返回按钮
+  }
+}
+
+/**
+ * 订阅原生「返回键被按下」事件。
+ *
+ * @param handler 返回键的处理函数（通常直接调 `goBack()`）
+ * @returns 取消订阅的函数；Web 环境返回一个空操作
+ */
+export async function onBackRequested(handler: () => void): Promise<() => void> {
+  if (!isNativePlatform()) {
+    return () => undefined;
+  }
+  try {
+    const handle = await ReminderAlarm.addListener('backRequested', handler);
+    return () => {
+      void handle.remove();
+    };
+  } catch {
+    return () => undefined;
   }
 }
