@@ -407,6 +407,7 @@ describe('回归：老功能不能被新功能弄坏', () => {
       advanceReminder: true,
       deadline,
       done: false,
+      completedAt: null,
       repeat: NO_REPEAT,
       createdAt: NOW - 86_400_000,
       updatedAt: NOW - 86_400_000,

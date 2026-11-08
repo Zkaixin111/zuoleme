@@ -57,6 +57,18 @@ export interface Todo {
   advanceReminder: boolean;
   /** 一次性任务表示完成；重复任务恒为 false（完成 = 推进到下一次） */
   done: boolean;
+  /**
+   * 完成时刻（毫秒时间戳）；未完成时为 `null`。
+   *
+   * 为什么要单独存：主页现在只显示未完成的待办，已完成的进「历史任务」页，
+   * 而历史页要按「什么时候完成的」倒序排。只靠 `done` 布尔值排不出来
+   * （那只能按 `updatedAt` 排，而编辑一次标题就会把 `updatedAt` 顶到最新，
+   * 历史顺序会莫名其妙地跳）。
+   *
+   * 老数据没有这个字段：`normalizeTodo` 在 `done === true` 时用 `updatedAt` 兜底，
+   * 保证升级后历史页不是空的。
+   */
+  completedAt: number | null;
   /** 重复规则 */
   repeat: RepeatRule;
   createdAt: number;

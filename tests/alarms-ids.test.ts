@@ -51,6 +51,7 @@ function makeTodo(id: string, overrides: Partial<Todo> = {}): Todo {
     advanceReminder: true,
     deadline: DEADLINE,
     done: false,
+    completedAt: null,
     repeat: NO_REPEAT,
     createdAt: NOW - DAY_MS,
     updatedAt: NOW - DAY_MS,

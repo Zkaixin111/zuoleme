@@ -119,6 +119,30 @@ function normalizeTodo(value: unknown): Todo | null {
 
   const now = Date.now();
   const hasDeadline = deadline !== null;
+  const done = candidate.done === true;
+  const createdAt = typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)
+    ? candidate.createdAt
+    : now;
+  const updatedAt = typeof candidate.updatedAt === 'number' && Number.isFinite(candidate.updatedAt)
+    ? candidate.updatedAt
+    : now;
+
+  /**
+   * 完成时刻。
+   *
+   * 两个容易写错的分支：
+   * - `done === false` 一律 `null`：哪怕磁盘上残留了一个旧时间戳也要清掉，
+   *   否则「取消完成再完成」会显示成很久以前完成的；
+   * - `done === true` 但没有 `completedAt`（B5 之前的老数据）→ 用 `updatedAt` 兜底。
+   *   没有这个兜底，升级后历史页会是空的 —— 用户会以为待办被删了。
+   */
+  let completedAt: number | null = null;
+  if (done) {
+    completedAt = typeof candidate.completedAt === 'number' && Number.isFinite(candidate.completedAt)
+      ? candidate.completedAt
+      : updatedAt;
+  }
+
   return {
     id: candidate.id,
     title: candidate.title,
@@ -126,15 +150,12 @@ function normalizeTodo(value: unknown): Todo | null {
     deadline,
     // 缺省视为「开启提前提醒」；没有截止时间时这个开关没有意义，归位 true
     advanceReminder: hasDeadline && candidate.advanceReminder === false ? false : true,
-    done: candidate.done === true,
+    done,
+    completedAt,
     // 重复需要时间锚点：没有 deadline 的待办一律按「不重复」处理
     repeat: hasDeadline ? normalizeRepeatRule(candidate.repeat) : { kind: 'none' },
-    createdAt: typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)
-      ? candidate.createdAt
-      : now,
-    updatedAt: typeof candidate.updatedAt === 'number' && Number.isFinite(candidate.updatedAt)
-      ? candidate.updatedAt
-      : now,
+    createdAt,
+    updatedAt,
   };
 }
 
@@ -364,6 +385,7 @@ export const api = {
       deadline,
       advanceReminder,
       done: false,
+      completedAt: null,
       repeat,
       createdAt: now,
       updatedAt: now,
@@ -435,12 +457,14 @@ export const api = {
           : nextOccurrence(merged.deadline, merged.repeat, now);
       if (next === null) {
         // 一次性任务 / 无期限任务，或规则损坏：退化成「真的完成」，不把任务卡死
-        updated = { ...merged, done: true, updatedAt: now };
+        updated = { ...merged, done: true, completedAt: now, updatedAt: now };
       } else {
-        updated = { ...merged, deadline: next, done: false, updatedAt: now };
+        // 重复任务：推进到下一次，**不算完成**，所以 completedAt 保持 null
+        updated = { ...merged, deadline: next, done: false, completedAt: null, updatedAt: now };
       }
     } else if (body.done === false) {
-      updated = { ...merged, done: false, updatedAt: now };
+      // 取消完成：清掉完成时刻，否则历史页里会留下一条已完成副本
+      updated = { ...merged, done: false, completedAt: null, updatedAt: now };
     } else {
       updated = { ...merged, updatedAt: now };
     }

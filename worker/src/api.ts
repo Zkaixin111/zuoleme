@@ -60,6 +60,8 @@ function toTodo(row: TodoRow): TodoWithNextFire {
     deadline: row.deadline,
     advanceReminder: true,
     done: row.done === 1,
+    // 老表没有 completed_at 列，用 updated_at 兜底 —— 与 normalizeTodo 的兼容策略保持一致
+    completedAt: row.done === 1 ? row.updated_at : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     nextFireAt: row.next_fire_at ?? null,

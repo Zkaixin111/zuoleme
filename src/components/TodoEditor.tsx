@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toDateTimeLocalValue } from '../../shared/format';
 import type { RepeatRule, Todo } from '../../shared/types';
+import { NO_REPEAT } from '../../shared/types';
 import { resolveDeadlineDraft } from '../lib/deadline-draft';
+import { FloatingBack } from './FloatingBack';
 import { RepeatPicker } from './RepeatPicker';
 
 const MINUTE_MS = 60_000;
@@ -20,6 +22,12 @@ export interface TodoEditorProps {
     advanceReminder: boolean;
     repeat: RepeatRule;
   }) => Promise<void>;
+  /** 标记完成（仅编辑未完成待办时可用） */
+  onDone?: (todo: Todo) => Promise<void>;
+  /** 删除（仅编辑时可用） */
+  onDelete?: (todo: Todo) => Promise<void>;
+  /** 表单是否有未保存改动（返回键要用它决定是否弹确认） */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 /** 默认截止时间：1 小时后，取整到 5 分钟 */
@@ -49,22 +57,27 @@ function tomorrowAt9(): number {
 /**
  * 新建 / 编辑待办（全屏页）。
  *
- * 字段顺序刻意固定：标题 → 内容 → 截止时间（含「不设时间」）→ 提前提醒 → 重复。
- * 标题是必填的「一句话」，内容是可选的长文本，只在详情页展示。
+ * **详情页已被删除，这里是唯一的查看+编辑入口**，所以除了字段编辑还要承担
+ * 「标记完成」「删除」两个危险操作（都放在底部操作栏上方的次要操作区，
+ * 且都要二次确认 —— 它们在视觉上不是主按钮，但在数据上是不可逆的）。
  *
- * 两个「不打扰用户」的细节：
+ * 三条「不打扰用户」的细节：
  * 1. **编辑时不动时间就不改时间**：`datetime-local` 只能精确到分钟，
  *    而待办可能带着秒（例如 23:45:37）。如果用户只是进来看看内容就保存，
- *    直接把输入框的值写回去会把 37 秒抹掉 —— 所以用 `deadlineDirty` 记录
- *    「用户是否真的动过时间输入框」，没动过就沿用原始时间戳（含秒）。
- * 2. **不设时间时把无意义的开关藏起来**：没有截止时间就没有重复与提前档位。
- *
- * 还有一条规则容易被写错，已抽到 `resolveDeadlineDraft` 里：
- * **逾期待办只改标题必须能保存**。这条待办的原始时间当然在过去，
- * 如果无脑校验「必须晚于现在」，用户就再也改不了它的标题了。
- * 所以只有「新建」或「用户真的动过时间」才做这个校验。
+ *    直接把输入框的值写回去会把 37 秒抹掉 —— 用 `initialDeadlineInput` 记住
+ *    进页面时输入框的原始文本，只有真的变了才算「动过」。
+ * 2. **逾期待办只改标题必须能保存**：判定在 `resolveDeadlineDraft` 里，
+ *    没动过时间就沿用原始时间戳，不做「必须晚于现在」校验。
+ * 3. **不设时间时把无意义的开关藏起来**：没有截止时间就没有重复与提前档位。
  */
-export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.Element {
+export function TodoEditor({
+  todo,
+  onCancel,
+  onSubmit,
+  onDone,
+  onDelete,
+  onDirtyChange,
+}: TodoEditorProps): JSX.Element {
   const [title, setTitle] = useState<string>(todo?.title ?? '');
   const [content, setContent] = useState<string>(todo?.content ?? '');
   const [hasDeadline, setHasDeadline] = useState<boolean>(todo === null || todo.deadline !== null);
@@ -72,56 +85,58 @@ export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.E
     toDateTimeLocalValue(todo?.deadline ?? defaultDeadline()),
   );
   const [advanceReminder, setAdvanceReminder] = useState<boolean>(todo?.advanceReminder ?? true);
-  const [repeat, setRepeat] = useState<RepeatRule>(todo?.repeat ?? { kind: 'none' });
+  const [repeat, setRepeat] = useState<RepeatRule>(todo?.repeat ?? NO_REPEAT);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<boolean>(false);
+  const [secondaryBusy, setSecondaryBusy] = useState<boolean>(false);
 
   /** 原始截止时间（含秒）；编辑老待办时用它兜住「没动过就原样保存」 */
   const originalDeadline = useRef<number | null>(todo?.deadline ?? null);
-  /** 用户是否真的动过时间输入框（含快捷按钮） */
-  const deadlineDirty = useRef<boolean>(false);
+  /**
+   * 进页面时输入框里的原始文本。
+   *
+   * 用「文本是否变过」判断「用户动没动过时间」，而不是用 `onChange` 打标记：
+   * 用户改了又改回原来那一分钟，应该算「没动过」（此时按原值保存，秒不会丢）。
+   */
+  const initialDeadlineInput = useRef<string>(deadlineValue);
 
   // 切换到另一条待办编辑时同步表单
   useEffect(() => {
+    const nextInput = toDateTimeLocalValue(todo?.deadline ?? defaultDeadline());
     setTitle(todo?.title ?? '');
     setContent(todo?.content ?? '');
     setHasDeadline(todo === null || todo.deadline !== null);
-    setDeadlineValue(toDateTimeLocalValue(todo?.deadline ?? defaultDeadline()));
+    setDeadlineValue(nextInput);
     setAdvanceReminder(todo?.advanceReminder ?? true);
-    setRepeat(todo?.repeat ?? { kind: 'none' });
+    setRepeat(todo?.repeat ?? NO_REPEAT);
     setError(null);
     originalDeadline.current = todo?.deadline ?? null;
-    deadlineDirty.current = false;
+    initialDeadlineInput.current = nextInput;
   }, [todo]);
 
-  /** 用户动过时间：记住脏标记 */
-  const changeDeadline = (value: string): void => {
-    deadlineDirty.current = true;
-    setDeadlineValue(value);
-  };
+  /** 用户是否动过时间输入框（含快捷按钮） */
+  const deadlineTouched = deadlineValue !== initialDeadlineInput.current;
 
-  /**
-   * 取最终要提交的截止时间。
-   *
-   * 判定逻辑在 `resolveDeadlineDraft`（纯函数，可单测）：这里只负责把
-   * 「用户到底动没动过时间」这层 UI 状态喂进去，并把不通过的原因翻译成人话。
-   *
-   * @returns 可以提交时给出时间戳（null = 不设时间），否则给出错误文案
-   */
-  const resolveDeadline = (): { deadline: number | null } | { error: string } => {
-    const draft = resolveDeadlineDraft({
-      isNew: todo === null,
-      hasDeadline,
-      dirty: deadlineDirty.current,
-      originalDeadline: originalDeadline.current,
-      inputValue: deadlineValue,
-      now: Date.now(),
-    });
-    if (draft.ok) {
-      return { deadline: draft.deadline };
-    }
-    return { error: draft.reason === 'past' ? '截止时间必须晚于现在' : '请选择截止时间' };
-  };
+  /** 表单是否有未保存改动（新建时为空表单 = 没改动，返回可以直接走） */
+  const dirty = useMemo<boolean>(() => {
+    const baseRepeat = todo?.repeat ?? NO_REPEAT;
+    return (
+      title !== (todo?.title ?? '') ||
+      content !== (todo?.content ?? '') ||
+      hasDeadline !== (todo === null || todo.deadline !== null) ||
+      (hasDeadline && deadlineTouched) ||
+      advanceReminder !== (todo?.advanceReminder ?? true) ||
+      JSON.stringify(repeat) !== JSON.stringify(baseRepeat)
+    );
+  }, [title, content, hasDeadline, deadlineTouched, advanceReminder, repeat, todo]);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  const changeDeadline = useCallback((value: string): void => {
+    setDeadlineValue(value);
+  }, []);
 
   const handleSubmit = async (): Promise<void> => {
     const trimmedTitle = title.trim();
@@ -139,12 +154,18 @@ export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.E
     }
 
     // 逾期待办只改标题时必须能保存：没动过时间就沿用原始时间戳，不做「晚于现在」校验
-    const resolved = resolveDeadline();
-    if ('error' in resolved) {
-      setError(resolved.error);
+    const draft = resolveDeadlineDraft({
+      isNew: todo === null,
+      hasDeadline,
+      dirty: deadlineTouched,
+      originalDeadline: originalDeadline.current,
+      inputValue: deadlineValue,
+      now: Date.now(),
+    });
+    if (!draft.ok) {
+      setError(draft.reason === 'past' ? '截止时间必须晚于现在' : '请选择截止时间');
       return;
     }
-    const deadline = resolved.deadline;
     if (hasDeadline && repeat.kind === 'weekly' && repeat.weekdays.length === 0) {
       setError('每周重复至少要选一天');
       return;
@@ -156,7 +177,7 @@ export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.E
       await onSubmit({
         title: trimmedTitle,
         content: content.trim(),
-        deadline,
+        deadline: draft.deadline,
         // 没有截止时间时这两个开关都没有意义，交给存储层归位
         advanceReminder: hasDeadline ? advanceReminder : true,
         repeat: hasDeadline ? repeat : { kind: 'none' },
@@ -168,14 +189,25 @@ export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.E
     }
   };
 
+  /** 标记完成 / 删除：二次确认在 App 侧统一做（与列表里的删除走同一条路径） */
+  const runSecondary = async (action: () => Promise<void>): Promise<void> => {
+    setSecondaryBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '操作失败');
+    } finally {
+      setSecondaryBusy(false);
+    }
+  };
+
   return (
-    <div className="pb-28">
-      <div className="mb-5 flex items-center justify-between">
-        <button type="button" className="btn-quiet -ml-2" onClick={onCancel}>
-          取消
-        </button>
-        <h1 className="text-[15px] font-medium text-ink">{todo ? '编辑待办' : '新建待办'}</h1>
-        <span className="w-12" aria-hidden="true" />
+    <div className="pb-44">
+      <div className="mb-5 flex items-center">
+        <h1 className="text-[22px] font-semibold leading-none text-ink">
+          {todo ? '编辑' : '新建待办'}
+        </h1>
       </div>
 
       <label className="block">
@@ -335,14 +367,50 @@ export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.E
         </p>
       ) : null}
 
-      <div className="mt-6 flex gap-2">
-        <button type="button" className="btn-ghost flex-1" onClick={onCancel} disabled={busy}>
-          取消
-        </button>
-        <button type="button" className="btn-primary flex-[2]" onClick={() => void handleSubmit()} disabled={busy}>
-          {busy ? '保存中' : '保存'}
-        </button>
+      {/* 次要操作区：视觉上不是主按钮，但都不可逆，点击后都要二次确认 */}
+      {todo ? (
+        <div className="mt-6 flex items-center justify-between border-t border-line pt-3">
+          {todo.done ? (
+            <span className="text-[11px] text-faint">这件事已完成</span>
+          ) : (
+            <button
+              type="button"
+              className="text-[13px] text-accent disabled:opacity-40"
+              disabled={busy || secondaryBusy}
+              onClick={() => (onDone ? void runSecondary(() => onDone(todo)) : undefined)}
+            >
+              {todo.repeat.kind === 'none' ? '标记完成' : '完成这一次'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="text-[13px] text-alert disabled:opacity-40"
+            disabled={busy || secondaryBusy}
+            onClick={() => (onDelete ? void runSecondary(() => onDelete(todo)) : undefined)}
+          >
+            删除这件事
+          </button>
+        </div>
+      ) : null}
+
+      {/* 底部固定操作栏：取消在左、保存在右（保存更宽，符合「这页主要是来改东西的」） */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 mx-auto max-w-md border-t border-line bg-paper px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+        <div className="pointer-events-auto flex gap-2">
+          <button type="button" className="btn-ghost flex-1" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+          <button
+            type="button"
+            className="btn-primary flex-[2]"
+            onClick={() => void handleSubmit()}
+            disabled={busy}
+          >
+            {busy ? '保存中' : '保存'}
+          </button>
+        </div>
       </div>
+
+      <FloatingBack onBack={onCancel} disabled={busy} />
     </div>
   );
 }

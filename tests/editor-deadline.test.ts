@@ -220,7 +220,10 @@ describe('源码守卫：校验不许被搬回组件里', () => {
     expect(editor).toContain('resolveDeadlineDraft(');
     // 这句话一旦回到组件里，就等于绕过 dirty 标记，逾期任务又会改不了标题
     expect(editor).not.toMatch(/deadline\s*<=\s*Date\.now\(\)/);
-    expect(editor).toContain('dirty: deadlineDirty.current');
+    // 「用户动没动过时间」这个标记的载体变了：以前是 ref（deadlineDirty.current），
+    // 现在改成派生值（deadlineTouched，因为 dirty 要参与渲染并经 onDirtyChange 上报给 App），
+    // 语义没变，仍然只认「输入框的值跟初始值不同」。
+    expect(editor).toMatch(/dirty: (deadlineDirty\.current|deadlineTouched)/);
     expect(editor).toContain('isNew: todo === null');
   });
 });

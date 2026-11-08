@@ -45,6 +45,7 @@ function makeTodo(id: string, deadline: number, done: boolean = false): Todo {
     advanceReminder: true,
     deadline,
     done,
+    completedAt: null,
     repeat: NO_REPEAT,
     createdAt: NOW - DAY_MS,
     updatedAt: NOW - DAY_MS,
@@ -195,10 +196,15 @@ describe('重复规则文案（详情页/列表第二行）', () => {
 });
 
 describe('布局健壮性：超长标题与多行内容的样式钩子', () => {
-  it('详情页标题与正文都有断行保护，内容保留换行', () => {
-    const detail = readSource('src/components/DetailView.tsx');
-    expect(detail).toMatch(/break-words text-\[22px\] font-semibold leading-snug text-ink/);
-    expect(detail).toContain('whitespace-pre-wrap break-words');
+  // 只读详情页已删除（点待办直接进编辑页），正文的换行保护改由编辑页的多行输入框承载：
+  // textarea 天然保留换行，不再需要 whitespace-pre-wrap。
+  it('常驻卡片标题有断行保护，正文由多行输入框承载（换行不丢）', () => {
+    const pinned = readSource('src/components/PinnedCard.tsx');
+    expect(pinned).toMatch(/break-words text-\[22px\] font-semibold leading-snug text-ink/);
+
+    const editor = readSource('src/components/TodoEditor.tsx');
+    expect(editor).toContain('<textarea');
+    expect(editor).toContain('maxLength={CONTENT_MAX_LENGTH}');
   });
 
   it('列表行标题 break-words + min-w-0（否则长英文单词会把布局撑破）', () => {
@@ -243,10 +249,12 @@ describe('浅色纸感：配色 token 与禁用样式', () => {
     const files = [
       'src/App.tsx',
       'src/components/HomeView.tsx',
-      'src/components/DetailView.tsx',
+      'src/components/HistoryView.tsx',
       'src/components/TodoEditor.tsx',
       'src/components/TodoRow.tsx',
       'src/components/PinnedCard.tsx',
+      'src/components/FloatingBack.tsx',
+      'src/components/SelectionToolbar.tsx',
       'src/components/RepeatPicker.tsx',
       'src/components/HealthPanel.tsx',
       'src/index.css',
@@ -295,10 +303,12 @@ describe('浅色纸感：配色 token 与禁用样式', () => {
     for (const file of [
       'src/App.tsx',
       'src/components/HomeView.tsx',
-      'src/components/DetailView.tsx',
+      'src/components/HistoryView.tsx',
       'src/components/TodoEditor.tsx',
       'src/components/TodoRow.tsx',
       'src/components/PinnedCard.tsx',
+      'src/components/FloatingBack.tsx',
+      'src/components/SelectionToolbar.tsx',
       'src/components/RepeatPicker.tsx',
       'src/components/HealthPanel.tsx',
     ]) {

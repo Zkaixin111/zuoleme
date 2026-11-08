@@ -21,19 +21,22 @@ export interface PinnedCardProps {
   busy: boolean;
   /** 标记完成（重复任务 = 推进到下一次） */
   onDone: (todo: Todo) => void;
-  /** 打开详情 */
+  /** 打开编辑页 */
   onOpen: (todo: Todo) => void;
   /** 打开新建 */
   onCreate: () => void;
 }
 
 /**
- * 顶部常驻卡片：始终显示「最近一件有截止时间的事」+ 剩余时间。
+ * 顶部常驻卡片。
  *
- * 只显示标题，不显示内容——内容在详情页里看。
+ * **视觉层级（这是重做过的部分）**：用户第一眼要读到「是什么事」，而不是「还有多久」。
+ * 所以标题 22px 是卡片里最大的字，倒计时降为第二行的一部分（14px），
+ * 不再有比标题更大的数字。原来那个 27px 的倒计时大字已经删掉 ——
+ * 它把重量从「事情」抢到了「数字」上，用户扫一眼只记住「2 小时」，想不起是哪件事。
  *
- * 逾期时**不显示角标**：大字已经是「已逾期 40 分钟」，角标再写一遍「已逾期」
- * 就是同一句话说两次，还把视觉重心从倒计时上抢走。
+ * 逾期时不再显示角标：第二行整行转成 `alert` 色并带一个小圆点，
+ * 信息已经够明确，再加一个「已逾期」角标就是同一句话说两遍。
  */
 export function PinnedCard({
   todo,
@@ -65,13 +68,14 @@ export function PinnedCard({
   const remaining = todo.deadline - now;
   const overdue = remaining <= 0;
   const urgent = !overdue && remaining <= URGENT_THRESHOLD_MS;
-  const reminderText = reminderCount > 0 ? `还有 ${reminderCount} 档提醒` : '提醒已全部发出';
 
   return (
     <section className="card p-5" aria-label="最近一件事">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-faint">最近一件事</p>
-        {overdue ? null : (
+        {overdue ? (
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-alert" aria-hidden="true" />
+        ) : (
           <span
             className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${
               urgent ? 'bg-accent-soft text-accent' : 'text-faint'
@@ -82,22 +86,27 @@ export function PinnedCard({
         )}
       </div>
 
-      <h2 className="mt-3 break-words text-[19px] font-semibold leading-snug text-ink">{todo.title}</h2>
+      <h2 className="mt-2 break-words text-[22px] font-semibold leading-snug text-ink">{todo.title}</h2>
 
-      <p className={`mt-2 text-[27px] font-semibold leading-none ${overdue ? 'text-alert' : 'text-accent'}`}>
-        {formatRemaining(remaining)}
+      <p className={`mt-1.5 text-[14px] leading-snug ${overdue ? 'text-alert' : 'text-soft'}`}>
+        {formatDeadline(todo.deadline, now)} 截止 · {formatRemaining(remaining)}
       </p>
 
-      <p className="mt-2 text-xs text-soft">
-        {formatDeadline(todo.deadline, now)} 截止 · {reminderText}
+      <p className="mt-1 text-[11px] text-faint">
+        {reminderCount > 0 ? `还有 ${reminderCount} 档提醒` : '提醒已全部发出'}
       </p>
 
       <div className="mt-4 flex gap-2">
-        <button type="button" className="btn-ghost flex-1" disabled={busy} onClick={() => onDone(todo)}>
+        <button
+          type="button"
+          className="btn-ghost h-10 flex-1 !py-0"
+          disabled={busy}
+          onClick={() => onDone(todo)}
+        >
           {todo.repeat.kind === 'none' ? '完成' : '完成这次'}
         </button>
-        <button type="button" className="btn-primary flex-1" onClick={() => onOpen(todo)}>
-          看内容
+        <button type="button" className="btn-primary h-10 flex-1 !py-0" onClick={() => onOpen(todo)}>
+          打开
         </button>
       </div>
     </section>

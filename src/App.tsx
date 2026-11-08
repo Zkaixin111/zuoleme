@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatDeadline } from '../shared/format';
 import type { RepeatRule, Todo } from '../shared/types';
-import { DetailView } from './components/DetailView';
 import { HealthPanel } from './components/HealthPanel';
+import { HistoryView } from './components/HistoryView';
 import { HomeView } from './components/HomeView';
 import { type PinnedTodo } from './components/PinnedCard';
 import { TodoEditor } from './components/TodoEditor';
 import { api, sortTodos } from './lib/api';
 import { remainingReminderCount } from './lib/alarms';
+import { decideBack, type View } from './lib/navigation';
 import {
   consumePendingOpen,
   isNativePlatform,
@@ -18,9 +19,6 @@ import {
   type PermissionSnapshot,
 } from './lib/reminder-bridge';
 import { useNow } from './lib/useNow';
-
-/** 当前视图（不引路由库，一个 state 足够） */
-type View = { kind: 'home' } | { kind: 'detail'; id: string } | { kind: 'editor'; id?: string };
 
 /** 新建/编辑提交的数据 */
 interface EditorInput {
@@ -40,6 +38,9 @@ interface EditorInput {
  *                             ↘ compileAlarmsWithStats → 原生 AlarmManager（静音横幅）
  *
  * 任何一次数据变化都会**全量重排**提醒，不存在「删了待办但提醒还在」的残留。
+ *
+ * 视图只有三个（详情页已删除）：首页 / 编辑页 / 历史任务页。
+ * 点待办直接进编辑页 —— 少一次点击，也少一个「只读页」和「编辑页」要同步的负担。
  */
 export default function App(): JSX.Element {
   const [todos, setTodos] = useState<Todo[]>([]);
@@ -53,6 +54,12 @@ export default function App(): JSX.Element {
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
   const [checkOpen, setCheckOpen] = useState<boolean>(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 批量选择模式（主页与历史页共用一套状态） */
+  const [selectionMode, setSelectionMode] = useState<boolean>(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [deleting, setDeleting] = useState<boolean>(false);
+  /** 编辑页是否有未保存改动（返回键据此决定是否确认） */
+  const [editorDirty, setEditorDirty] = useState<boolean>(false);
   const permissionAsked = useRef<boolean>(false);
   const now = useNow(1000);
 
@@ -86,13 +93,44 @@ export default function App(): JSX.Element {
     return snapshot;
   }, []);
 
-  /** 用户点了通知 → 打开对应详情页（原生侧读一次即清空） */
+  /** 用户点了通知 → 打开对应待办的编辑页（原生侧读一次即清空） */
   const openPendingNotification = useCallback(async (): Promise<void> => {
     const todoId = await consumePendingOpen();
     if (todoId !== null) {
-      setView({ kind: 'detail', id: todoId });
+      setView({ kind: 'editor', id: todoId });
     }
   }, []);
+
+  const exitSelection = useCallback((): void => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  /**
+   * 统一的「返回」入口：右下角浮动按钮、系统返回手势、编辑页的「取消」都走这里。
+   *
+   * 判定顺序（选择模式优先）在 `decideBack` 里，可单测。
+   */
+  const goBack = useCallback((): void => {
+    const action = decideBack({ view, selectionMode, editorDirty });
+    if (action === 'exit-selection') {
+      exitSelection();
+      return;
+    }
+    if (action === 'confirm-leave-editor' && !window.confirm('放弃本次修改？')) {
+      return;
+    }
+    exitSelection();
+    setEditorDirty(false);
+    setView({ kind: 'home' });
+  }, [view, selectionMode, editorDirty, exitSelection]);
+
+  // 换页面时清掉临时状态：选择模式与「未保存改动」都只属于上一个页面
+  useEffect(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+    setEditorDirty(false);
+  }, [view.kind]);
 
   // 首次进入：读本机数据 → 排提醒 → 缺通知权限就主动申请一次（每次冷启动最多一次）
   useEffect(() => {
@@ -176,7 +214,7 @@ export default function App(): JSX.Element {
         repeat: input.repeat,
       });
       await load();
-      setView({ kind: 'detail', id });
+      setView({ kind: 'home' });
     },
     [load],
   );
@@ -210,7 +248,26 @@ export default function App(): JSX.Element {
     [load],
   );
 
-  /** 删除 */
+  /**
+   * 编辑页里的「标记完成 / 完成这一次」。
+   *
+   * 与列表圆圈的区别只有两点：**要二次确认**（编辑页是认真操作的地方，
+   * 误触代价更大），以及完成后**回到首页**（这条待办已经不在待办列表里了，
+   * 留在编辑页会看到一个已完成的任务）。
+   */
+  const handleEditorDone = useCallback(
+    async (todo: Todo): Promise<void> => {
+      const question = todo.repeat.kind === 'none' ? '标记为已完成？' : '完成这一次，并推进到下一次？';
+      if (!window.confirm(question)) {
+        return;
+      }
+      await handleToggle(todo);
+      setView({ kind: 'home' });
+    },
+    [handleToggle],
+  );
+
+  /** 删除（自带二次确认；编辑页与列表共用这一条路径） */
   const handleDelete = useCallback(
     async (todo: Todo): Promise<void> => {
       if (!window.confirm(`删除「${todo.title}」？它之后的提醒会一起取消。`)) {
@@ -230,6 +287,82 @@ export default function App(): JSX.Element {
     [load],
   );
 
+  /** 恢复一条已完成的待办（历史页「恢复」） */
+  const handleRestore = useCallback(
+    async (todo: Todo): Promise<void> => {
+      setBusyId(todo.id);
+      try {
+        await api.updateTodo(todo.id, { done: false });
+        await load();
+        setNotice(`「${todo.title}」已恢复到待办列表`);
+      } catch (restoreError) {
+        setError(restoreError instanceof Error ? restoreError.message : '恢复失败');
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
+  );
+
+  /** 长按进入选择模式并选中这一条 */
+  const handleLongPress = useCallback((todo: Todo): void => {
+    setSelectionMode(true);
+    setSelectedIds(new Set([todo.id]));
+  }, []);
+
+  /** 切换某一条的选中状态 */
+  const handleToggleSelection = useCallback((todo: Todo): void => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(todo.id)) {
+        next.delete(todo.id);
+      } else {
+        next.add(todo.id);
+      }
+      return next;
+    });
+  }, []);
+
+  /** 当前页面上「看得见」的待办（全选的作用范围） */
+  const visibleTodos = useMemo<readonly Todo[]>(
+    () => (view.kind === 'history' ? todos.filter((todo) => todo.done) : todos.filter((todo) => !todo.done)),
+    [todos, view.kind],
+  );
+
+  /** 全选当前页面上的可见项（已经在别处选中的 id 不受影响） */
+  const handleSelectAll = useCallback((): void => {
+    setSelectedIds(new Set(visibleTodos.map((todo) => todo.id)));
+  }, [visibleTodos]);
+
+  /**
+   * 批量删除已选项。
+   *
+   * 逐条 `deleteTodo` 而不是新增批量接口：数据量是几十条级别，
+   * 复用单条路径可以保证「删除即取消提醒」这条语义只有一份实现。
+   */
+  const handleDeleteSelected = useCallback(async (): Promise<void> => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) {
+      return;
+    }
+    if (!window.confirm(`删除 ${ids.length} 件事？提醒会一起取消。`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      for (const id of ids) {
+        await api.deleteTodo(id);
+      }
+      await load();
+      exitSelection();
+      setNotice(`已删除 ${ids.length} 件`);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : '删除失败');
+    } finally {
+      setDeleting(false);
+    }
+  }, [selectedIds, load, exitSelection]);
+
   /** 最近一件**有截止时间**的未完成的事（无期限的没有倒计时可显示） */
   const pinned = useMemo<PinnedTodo | null>(() => {
     const candidate = todos.find((todo) => !todo.done && todo.deadline !== null);
@@ -244,12 +377,13 @@ export default function App(): JSX.Element {
     () => todos.filter((todo) => !todo.done && todo.deadline === null).length,
     [todos],
   );
+  /** 已完成总数（「历史任务 · N」入口） */
+  const doneCount = useMemo<number>(() => todos.filter((todo) => todo.done).length, [todos]);
 
   const notificationBlocked = permissions?.supported === true && permissions.notifications === false;
   /** 磁盘上有旧提醒条解析不出来：提醒已经丢了，必须让用户看见 */
   const droppedAlarms = permissions?.droppedAlarmCount ?? 0;
 
-  const activeTodo = view.kind === 'detail' ? todos.find((todo) => todo.id === view.id) ?? null : null;
   const editingTodo = view.kind === 'editor' && view.id ? todos.find((todo) => todo.id === view.id) ?? null : null;
 
   return (
@@ -307,31 +441,36 @@ export default function App(): JSX.Element {
         </div>
       ) : null}
 
-      {view.kind === 'detail' && activeTodo ? (
-        <DetailView
-          todo={activeTodo}
-          now={now}
-          busy={busyId === activeTodo.id}
-          onBack={() => setView({ kind: 'home' })}
-          onDone={(todo) => void handleToggle(todo)}
-          onEdit={(todo) => setView({ kind: 'editor', id: todo.id })}
-          onDelete={(todo) => void handleDelete(todo)}
-        />
-      ) : null}
-
       {view.kind === 'editor' ? (
         <TodoEditor
           todo={editingTodo}
-          onCancel={() =>
-            setView(editingTodo ? { kind: 'detail', id: editingTodo.id } : { kind: 'home' })
-          }
-          onSubmit={(input) =>
-            editingTodo ? handleUpdate(editingTodo.id, input) : handleCreate(input)
-          }
+          onCancel={goBack}
+          onDirtyChange={setEditorDirty}
+          onSubmit={(input) => (editingTodo ? handleUpdate(editingTodo.id, input) : handleCreate(input))}
+          onDone={editingTodo ? handleEditorDone : undefined}
+          onDelete={editingTodo ? handleDelete : undefined}
         />
       ) : null}
 
-      {view.kind === 'home' || (view.kind === 'detail' && activeTodo === null) ? (
+      {view.kind === 'history' ? (
+        <HistoryView
+          todos={todos}
+          now={now}
+          busyId={busyId}
+          selectionMode={selectionMode}
+          selectedIds={selectedIds}
+          deleting={deleting}
+          onBack={goBack}
+          onRestore={(todo) => void handleRestore(todo)}
+          onLongPress={handleLongPress}
+          onToggleSelection={handleToggleSelection}
+          onSelectAll={handleSelectAll}
+          onCancelSelection={exitSelection}
+          onDeleteSelected={() => void handleDeleteSelected()}
+        />
+      ) : null}
+
+      {view.kind === 'home' ? (
         <HomeView
           todos={todos}
           now={now}
@@ -340,9 +479,19 @@ export default function App(): JSX.Element {
           undatedCount={undatedCount}
           loading={loading}
           busyId={busyId}
+          doneCount={doneCount}
+          selectionMode={selectionMode}
+          selectedIds={selectedIds}
+          deleting={deleting}
           onCreate={() => setView({ kind: 'editor' })}
-          onOpen={(todo) => setView({ kind: 'detail', id: todo.id })}
+          onOpen={(todo) => setView({ kind: 'editor', id: todo.id })}
           onToggle={(todo) => void handleToggle(todo)}
+          onLongPress={handleLongPress}
+          onToggleSelection={handleToggleSelection}
+          onSelectAll={handleSelectAll}
+          onCancelSelection={exitSelection}
+          onDeleteSelected={() => void handleDeleteSelected()}
+          onOpenHistory={() => setView({ kind: 'history' })}
         />
       ) : null}
 

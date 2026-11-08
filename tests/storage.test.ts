@@ -194,6 +194,7 @@ describe('sortTodos', () => {
       advanceReminder: true,
       deadline: 0,
       done: false,
+      completedAt: null,
       repeat: { kind: 'none' as const },
       createdAt: 0,
       updatedAt: 0,
