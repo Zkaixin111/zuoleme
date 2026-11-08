@@ -22,8 +22,31 @@ export const MAX_ALARMS = 240;
 /** 重复任务向后展开的时间窗：30 天 */
 export const ALARM_HORIZON_MS = 30 * DAY_MS;
 
-/** 单条重复任务最多展开的实例数（防止 15 分钟间隔把循环撑爆） */
-const MAX_INSTANCES_PER_TODO = MAX_ALARMS;
+/**
+ * 单条待办最多展开多少个**实例**（不是闹钟条数）。
+ *
+ * 24 个实例对「每 15 分钟」的任务 = 覆盖未来 6 小时，更远的靠下次打开应用续排，
+ * 与「重复任务只展开 30 天」是同一套取舍逻辑。
+ *
+ * 为什么必须有这条上限：没有它，一条 15 分钟间隔的待办能在 30 天里展开 2880 个实例，
+ * 把全局名额吃光，其它待办一条提醒都排不上（用户看到的是「别的事彻底不响了」）。
+ */
+export const MAX_INSTANCES_PER_TODO = 24;
+
+/**
+ * 单条待办**至少**保留的闹钟条数：6 档一次性任务正好一套，再留 2 条余量。
+ *
+ * 保证「待办很多时，每条至少还能响几次」，不会因为平均分配算出 0 或 1。
+ */
+export const MIN_ALARMS_PER_TODO = 8;
+
+/**
+ * 推进到未来时最多跳多少步（安全阀）。
+ *
+ * 与实例数上限分开：一条「每 15 分钟」的待办如果逾期 30 天，
+ * 要跳 2880 步才到今天，用 24 当上界会直接放弃这条待办（等于静默不响）。
+ */
+const MAX_ADVANCE_STEPS = 5000;
 
 /** 一条待排闹钟（与原生插件约定的结构，字段必须一一对应） */
 export interface ReminderAlarm {
@@ -93,10 +116,13 @@ export function alarmId(todoId: string, kind: ReminderKind, fireAt: number): num
  * - 一次性任务：deadline 在未来就是唯一实例，否则没有实例；
  * - 重复任务：先推进到未来，再沿规则展开 `ALARM_HORIZON_MS` 内的全部实例。
  *
- * @param todo 待办
+ * 入参窄化成「deadline 一定有值」：不设时间的待办在调用处就被滤掉了，
+ * 让 `null` 漏进来会算出 `NaN` 的 fireAt，然后排进系统里。
+ *
+ * @param todo 待办（deadline 已窄化为 number）
  * @param now 当前时间
  */
-function instanceDeadlines(todo: Todo, now: number): number[] {
+function instanceDeadlines(todo: Todo & { deadline: number }, now: number): number[] {
   const rule = todo.repeat;
   if (!rule || rule.kind === 'none') {
     return todo.deadline > now ? [todo.deadline] : [];
@@ -108,13 +134,17 @@ function instanceDeadlines(todo: Todo, now: number): number[] {
   let cursor = todo.deadline;
   // 当前这次已经过去：先推进到未来（不补发过去的实例）
   let guard = 0;
-  while (cursor <= now && guard < MAX_INSTANCES_PER_TODO) {
+  while (cursor <= now && guard < MAX_ADVANCE_STEPS) {
     const next = nextOccurrence(cursor, rule, now);
     if (next === null) {
       return [];
     }
     cursor = next;
     guard += 1;
+  }
+  if (cursor <= now) {
+    // 跳了 MAX_ADVANCE_STEPS 步还没到今天：规则过于离谱，放弃而不是排一堆过去时刻
+    return [];
   }
 
   while (cursor < horizon && instances.length < MAX_INSTANCES_PER_TODO) {
@@ -141,7 +171,16 @@ export function compileAlarms(todos: readonly Todo[], now: number): ReminderAlar
 }
 
 /**
- * 同 `compileAlarms`，但额外给出被截断的条数（界面可据此提示）。
+ * 同 `compileAlarms`，但额外给出被丢弃的条数（界面可据此提示）。
+ *
+ * **两级配额**（顺序不能反）：
+ * 1. 先按「每条待办」截断：`perTodoQuota = max(MIN_ALARMS_PER_TODO, floor(MAX_ALARMS / 活跃条数))`，
+ *    每条待办只保留自己**最早**的那几条候选。这一步是为了防止一条高频重复任务
+ *    （比如「每 15 分钟」）把 240 个名额全部吃光，导致别的待办一条都排不上；
+ * 2. 再按全局 fireAt 升序取前 `MAX_ALARMS` 条作为最终兜底。
+ *
+ * `truncated` = 「配额前生成的候选总数 − 最终保留数」，**同时包含**上面两级丢弃的条数，
+ * 不能只算第二级 —— 否则界面上显示的「还有多少条没排」会远小于真实值。
  *
  * @param todos 待办列表
  * @param now 当前时间
@@ -154,14 +193,18 @@ export function compileAlarmsWithStats(todos: readonly Todo[], now: number): Com
   // 先按 id 排序，让 id 分配结果与输入顺序无关（幂等，便于调试与测试）
   const ordered = [...todos].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const usedIds = new Set<number>();
-  const candidates: ReminderAlarm[] = [];
+  const perTodo: ReminderAlarm[][] = [];
+  let totalCandidates = 0;
 
   for (const todo of ordered) {
-    if (todo.done) {
+    // 不设截止时间 = 用户明确说了「这件事不用提醒」，不产生候选，也不计入活跃条数
+    if (todo.done || todo.deadline === null) {
       continue;
     }
-    const offsets = reminderOffsetsFor(todo.repeat);
-    for (const deadline of instanceDeadlines(todo, now)) {
+    const withDeadline: Todo & { deadline: number } = { ...todo, deadline: todo.deadline };
+    const offsets = reminderOffsetsFor(todo.repeat, todo.advanceReminder);
+    const candidates: ReminderAlarm[] = [];
+    for (const deadline of instanceDeadlines(withDeadline, now)) {
       for (const offset of offsets) {
         const fireAt = deadline - offset.offsetMs;
         if (fireAt <= now) {
@@ -178,12 +221,32 @@ export function compileAlarmsWithStats(todos: readonly Todo[], now: number): Com
         });
       }
     }
+    if (candidates.length === 0) {
+      continue;
+    }
+    // 实例按时间升序展开、档位按由远及近排列，所以这里天然已是 fireAt 升序
+    candidates.sort((a, b) => (a.fireAt !== b.fireAt ? a.fireAt - b.fireAt : a.id - b.id));
+    perTodo.push(candidates);
+    totalCandidates += candidates.length;
   }
 
-  candidates.sort((a, b) => (a.fireAt !== b.fireAt ? a.fireAt - b.fireAt : a.id - b.id));
+  // 第一级：每条待办的配额（活跃待办越少，单条能拿的名额越多）
+  const perTodoQuota = Math.max(
+    MIN_ALARMS_PER_TODO,
+    Math.floor(MAX_ALARMS / Math.max(1, perTodo.length)),
+  );
+  const kept: ReminderAlarm[] = [];
+  for (const candidates of perTodo) {
+    for (const alarm of candidates.slice(0, perTodoQuota)) {
+      kept.push(alarm);
+    }
+  }
 
-  const alarms = candidates.slice(0, MAX_ALARMS);
-  return { alarms, truncated: candidates.length - alarms.length };
+  // 第二级：全局兜底，取最早的 MAX_ALARMS 条
+  kept.sort((a, b) => (a.fireAt !== b.fireAt ? a.fireAt - b.fireAt : a.id - b.id));
+  const alarms = kept.slice(0, MAX_ALARMS);
+
+  return { alarms, truncated: totalCandidates - alarms.length };
 }
 
 /**
@@ -209,16 +272,20 @@ function allocateId(candidate: number, usedIds: Set<number>): number {
  *
  * @param todo 待办
  * @param now 当前时间
- * @returns 下一次截止时间；一次性任务已过期或规则损坏时返回 null
+ * @returns 下一次截止时间；不设时间、一次性任务已过期或规则损坏时返回 null
  */
 export function nextDeadlineFor(todo: Todo, now: number): number | null {
+  const deadline = todo.deadline;
+  if (deadline === null) {
+    return null;
+  }
   if (todo.repeat.kind === 'none') {
-    return todo.deadline > now ? todo.deadline : null;
+    return deadline > now ? deadline : null;
   }
-  if (todo.deadline > now) {
-    return todo.deadline;
+  if (deadline > now) {
+    return deadline;
   }
-  return nextOccurrence(todo.deadline, todo.repeat, now);
+  return nextOccurrence(deadline, todo.repeat, now);
 }
 
 /**
@@ -237,7 +304,9 @@ export function remainingReminderCount(todo: Todo, now: number): number {
   if (deadline === null) {
     return 0;
   }
-  return reminderOffsetsFor(todo.repeat).filter((offset) => deadline - offset.offsetMs > now).length;
+  return reminderOffsetsFor(todo.repeat, todo.advanceReminder).filter(
+    (offset) => deadline - offset.offsetMs > now,
+  ).length;
 }
 
 /**
@@ -247,13 +316,15 @@ export function remainingReminderCount(todo: Todo, now: number): number {
  * @param now 当前时间
  */
 export function countPendingAlarms(todo: Todo, now: number): number {
-  if (todo.done) {
+  if (todo.done || todo.deadline === null) {
     return 0;
   }
-  const deadlines = instanceDeadlines(todo, now);
+  const withDeadline: Todo & { deadline: number } = { ...todo, deadline: todo.deadline };
+  const deadlines = instanceDeadlines(withDeadline, now);
+  const offsets = reminderOffsetsFor(todo.repeat, todo.advanceReminder);
   let total = 0;
   for (const deadline of deadlines) {
-    for (const offset of reminderOffsetsFor(todo.repeat)) {
+    for (const offset of offsets) {
       if (deadline - offset.offsetMs > now) {
         total += 1;
       }

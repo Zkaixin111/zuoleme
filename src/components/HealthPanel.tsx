@@ -245,9 +245,11 @@ export function HealthPanel({
               </ul>
 
               <div className="flex items-center justify-between border-t border-line pt-3">
-                <p className="text-[11px] text-faint">
+                <p className="text-[11px] leading-relaxed text-faint">
                   已排程提醒：{scheduledCount} 条
-                  {truncatedCount > 0 ? `（另有 ${truncatedCount} 条超过上限，打开应用后继续续排）` : ''}
+                  {truncatedCount > 0
+                    ? `（另有 ${truncatedCount} 条更晚或更密的提醒本次没排，打开应用会继续续排）`
+                    : ''}
                 </p>
                 <button
                   type="button"

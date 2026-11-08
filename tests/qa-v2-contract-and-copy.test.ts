@@ -172,12 +172,27 @@ describe('F. 通知绝不会露出用户正文（content）', () => {
 });
 
 describe('H. 三处 ReminderAlarm 字段必须一一对应', () => {
-  it('Kotlin AlarmRecord = 前端 NativeAlarm（字段名与类型都对得上）', () => {
+  it('Kotlin AlarmRecord = 前端 NativeAlarm + 一个仅本机的 legacyBody（桥的边界写明确）', () => {
     const kotlin = kotlinDataClassFields(STORE, 'AlarmRecord');
     const native = tsInterfaceFields(BRIDGE, 'NativeAlarm');
 
-    expect(kotlin.map(([name]) => name)).toEqual(['id', 'todoId', 'title', 'deadline', 'fireAt']);
-    expect(native.map(([name]) => name)).toEqual(kotlin.map(([name]) => name));
+    // 跨桥的 5 个字段 + 1 个只在本机内部用的 legacyBody（旧格式里已经算好的正文）
+    expect(kotlin.map(([name]) => name)).toEqual([
+      'id',
+      'todoId',
+      'title',
+      'deadline',
+      'fireAt',
+      'legacyBody',
+    ]);
+    expect(kotlin.find(([name]) => name === 'legacyBody')?.[1]).toBe('String?');
+
+    expect(native.map(([name]) => name)).toEqual(['id', 'todoId', 'title', 'deadline', 'fireAt']);
+    // 差集必须**恰好**是 legacyBody：多一个少一个都要红（比"恰好五个"更能锁住契约）
+    expect(kotlin.map(([name]) => name).filter((name) => !native.some(([field]) => field === name))).toEqual([
+      'legacyBody',
+    ]);
+    expect(native.map(([name]) => name).filter((name) => !kotlin.some(([field]) => field === name))).toEqual([]);
 
     const typeMap: Record<string, string[]> = {
       Int: ['number'],
@@ -185,6 +200,9 @@ describe('H. 三处 ReminderAlarm 字段必须一一对应', () => {
       String: ['string'],
     };
     for (const [name, kotlinType] of kotlin) {
+      if (name === 'legacyBody') {
+        continue;
+      }
       const tsType = native.find(([field]) => field === name)?.[1];
       expect(tsType, `字段 ${name} 在 NativeAlarm 里缺失`).toBeTruthy();
       expect(typeMap[kotlinType], `Kotlin 字段 ${name} 的类型 ${kotlinType} 没有映射`).toContain(tsType);
@@ -200,7 +218,7 @@ describe('H. 三处 ReminderAlarm 字段必须一一对应', () => {
     expect(nativeFields.filter((name) => !alarmFields.includes(name))).toEqual([]);
   });
 
-  it('插件读取的键 = 落盘写入的键 = 约定的五个字段（少一个就是重启后静默丢字段）', () => {
+  it('插件读取的键 = 5 个跨桥字段；落盘再读回的键 = 那 5 个 + 仅本机的 body', () => {
     const readKeys = new Set<string>();
     for (const match of PLUGIN.matchAll(/item\.opt(?:Int|Long|String)\("(\w+)"/g)) {
       readKeys.add(match[1]);
@@ -214,9 +232,15 @@ describe('H. 三处 ReminderAlarm 字段必须一一对应', () => {
       loadKeys.add(match[1]);
     }
 
+    // JS → 原生（插件）仍然只有 5 个字段，body 不跨桥
     expect([...readKeys].sort()).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
-    expect([...saveKeys].sort()).toEqual([...readKeys].sort());
-    expect([...loadKeys].sort()).toEqual([...readKeys].sort());
+    // 落盘多写一个 body，用于把旧格式那句已算好的正文透传下去
+    expect([...saveKeys].sort()).toEqual(['body', 'deadline', 'fireAt', 'id', 'title', 'todoId']);
+    // 读回来的键必须与写下去的键**完全一致**（少读一个 = 存盘再读回来就退化）
+    expect([...loadKeys].sort()).toEqual([...saveKeys].sort());
+
+    // 附加守卫：body 只能由 legacyBody 透传而来，不能从别处被写进磁盘
+    expect(STORE).toMatch(/alarm\.legacyBody\?\.let \{ item\.put\("body", it\) \}/);
   });
 
   it('PendingIntent 的 extra 与接收端读取的 extra 完全一致（少一个 = 通知里标题变默认值）', () => {
@@ -233,21 +257,30 @@ describe('H. 三处 ReminderAlarm 字段必须一一对应', () => {
   });
 });
 
-describe('F2. 原生存储版本不匹配的后果（升级窗口风险）', () => {
-  it('load 在版本不匹配时直接返回空列表（旧记录整体丢弃）', () => {
-    const body = kotlinFunctionBody(STORE, /fun load\(/);
-    expect(body).toContain('version != FORMAT_VERSION');
-    expect(body).toContain('return emptyList()');
-    // 丢弃发生在读取 KEY_ALARMS 之前，说明不会尝试解析旧格式
-    const versionCheckAt = body.indexOf('return emptyList()');
-    const readAt = body.indexOf('getString(KEY_ALARMS');
-    expect(versionCheckAt).toBeLessThan(readAt);
+describe('F2. 原生存储版本不匹配时的行为（覆盖安装窗口）', () => {
+  it('只有「未来版本」才整体放弃；旧格式必须照常解析（修复后行为）', () => {
+    const body = kotlinFunctionBody(STORE, /fun loadWithStats\(/);
+
+    // 修复前的病灶：version != FORMAT_VERSION → return emptyList()，
+    // 于是覆盖安装（旧盘 + 新代码 + 系统已清空 AlarmManager）之后一条提醒都不会响。
+    expect(STORE).not.toMatch(/version != FORMAT_VERSION/);
+    // 未来版本（本版本不认识）才允许放弃，而且要留 ERROR 日志
+    expect(body).toContain('version > FORMAT_VERSION');
+    // 旧格式（缺 version 或 < 2）走宽容解析：版本检查**不能**挡在读盘之前
+    expect(body).toContain('getString(KEY_ALARMS');
+    expect(body.indexOf('version > FORMAT_VERSION')).toBeLessThan(body.indexOf('getString(KEY_ALARMS'));
+
+    // 宽容解析的落点：旧形状的三个键都要被读
+    expect(STORE).toContain('optString("body"');
+    expect(STORE).toContain('val legacyBody: String? = null');
   });
 
-  it('scheduleAll 的取消依据是 load() 的结果：版本不匹配时一条都不会被取消（也不会被重建）', () => {
+  it('scheduleAll 的取消依据是 load() 的结果：旧记录能被读出来，才谈得上重排', () => {
     const body = kotlinFunctionBody(STORE, /fun scheduleAll\(/);
     expect(body).toContain('val previous = load(context)');
     expect(body).toContain('cancelPendingIntents(context, alarmManager, previous)');
+    // 落盘必须早于取消：否则「清盘 → 写盘」之间被杀，重启后读到空记录
+    expect(body.indexOf('save(context, future)')).toBeLessThan(body.indexOf('cancelPendingIntents('));
   });
 
   it('升级后闹钟能重建的前提是「动过手」：MY_PACKAGE_REPLACED 已注册在 BootReceiver', () => {
@@ -289,7 +322,7 @@ describe('G. 剩余时间文案：TS 与 Kotlin 两端是否一致', () => {
   }
 
   /**
-   * Kotlin `ReminderNotifier.remainingText` 的逐行移植。
+   * Kotlin `ReminderNotifier.remainingText` 的逐行移植（修复后的口径）。
    *
    * @param remainingMs 剩余毫秒
    */
@@ -298,7 +331,7 @@ describe('G. 剩余时间文案：TS 与 Kotlin 两端是否一致', () => {
       return `还有${kotlinDurationText(remainingMs)}截止`;
     }
     const overdue = -remainingMs;
-    return overdue >= 60_000 ? `已逾期${kotlinDurationText(overdue)}` : '已到截止时间';
+    return overdue >= 60_000 ? `已逾期 ${kotlinDurationText(overdue)}` : '刚刚到点';
   }
 
   it('正数区间（用户最常看到的）两端逐值一致', () => {
@@ -323,19 +356,35 @@ describe('G. 剩余时间文案：TS 与 Kotlin 两端是否一致', () => {
     }
   });
 
-  it('已知分歧（已上报 P2）：零/负区间两端口径不同，仅记录现状', () => {
-    // App 内详情页用 formatRemaining，通知用 remainingText
-    expect(formatRemaining(0)).toBe('已逾期');
-    expect(kotlinRemainingText(0)).toBe('已到截止时间');
+  it('零/负区间两端逐值一致（修复后：不再是「已到截止时间」vs「已逾期」的分歧）', () => {
+    const samples = [
+      0,
+      -1,
+      -59_999,
+      -60_000,
+      -60_001,
+      -90_000,
+      -40 * 60_000,
+      -3_599_999,
+      -3_600_000,
+      -3_600_000 - 60_000,
+      -86_399_999,
+      -86_400_000,
+      -86_400_000 - 3_600_000,
+      -3 * 86_400_000,
+      -7 * 86_400_000,
+      -30 * 86_400_000,
+    ];
 
-    expect(formatRemaining(-59_999)).toBe('已逾期');
-    expect(kotlinRemainingText(-59_999)).toBe('已到截止时间');
+    for (const ms of samples) {
+      expect(kotlinRemainingText(ms), `逾期 ${ms}ms 的两端文案不一致`).toBe(formatRemaining(ms));
+    }
 
-    expect(formatRemaining(-60_000)).toBe('已逾期');
-    expect(kotlinRemainingText(-60_000)).toBe('已逾期1分钟');
-
-    expect(formatRemaining(-40 * 60_000)).toBe('已逾期');
-    expect(kotlinRemainingText(-40 * 60_000)).toBe('已逾期40分钟');
+    // 不只比对「两端相等」——两端一起写错也会相等，所以把边界语义也钉死
+    expect(formatRemaining(0)).toBe('刚刚到点');
+    expect(formatRemaining(-59_999)).toBe('刚刚到点');
+    expect(formatRemaining(-60_000)).toBe('已逾期 1分钟');
+    expect(formatRemaining(-40 * 60_000)).toBe('已逾期 40分钟');
 
     // 非有限值只有 TS 侧有分支
     expect(formatRemaining(Number.NaN)).toBe('—');
@@ -355,6 +404,7 @@ describe('回归：老功能不能被新功能弄坏', () => {
       id: 'one-off',
       title: '一次性',
       content: '',
+      advanceReminder: true,
       deadline,
       done: false,
       repeat: NO_REPEAT,

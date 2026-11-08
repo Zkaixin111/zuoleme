@@ -100,7 +100,7 @@ describe('A. 重复任务「提前完成」必须真的往前走', () => {
     const updated = await api.updateTodo(created.id, { done: true });
 
     expect(updated.done).toBe(false);
-    expect(parts(updated.deadline)).toEqual([2026, 3, 5, 9, 0]);
+    expect(parts(updated.deadline as number)).toEqual([2026, 3, 5, 9, 0]);
     // 磁盘上的数据也必须同步（否则界面显示已推进、重启后又退回旧时间）
     expect(readTodos()[0].deadline).toBe(updated.deadline);
     expect(readTodos()[0].done).toBe(false);

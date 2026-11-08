@@ -22,13 +22,29 @@ import org.json.JSONObject
  * @property title 通知标题（= 待办标题）
  * @property deadline 该实例的截止时刻
  * @property fireAt 触发时刻（epoch 毫秒）
+ * @property legacyBody 旧格式（v1）里已经算好的正文；只在本机内部透传，**不跨 JS 桥**
  */
 data class AlarmRecord(
     val id: Int,
     val todoId: String,
     val title: String,
     val deadline: Long,
-    val fireAt: Long
+    val fireAt: Long,
+    val legacyBody: String? = null
+)
+
+/**
+ * 一次读盘的结果：记录本身 + 被丢弃的条数。
+ *
+ * `dropped` 是给界面用的可观测信号：不为 0 说明磁盘上的记录格式和当前解析器对不上，
+ * 用户应该被明确告知「有提醒没能恢复」，而不是等他某天发现「提醒没响」。
+ *
+ * @property records 成功解析出的提醒
+ * @property dropped 解析失败被丢弃的条数（正常为 0）
+ */
+data class LoadResult(
+    val records: List<AlarmRecord>,
+    val dropped: Int
 )
 
 /**
@@ -57,6 +73,15 @@ object ReminderStore {
     /** 当前存盘格式版本 */
     private const val FORMAT_VERSION = 2
 
+    /**
+     * 标题缺失时的兜底文案。
+     *
+     * 这里必须自己声明一份（不能引用 `AlarmReceiver.DEFAULT_TITLE`）：
+     * 那两处是各自的 `companion object` 常量，从 `ReminderStore` 里引用会变成
+     * 「先初始化对方类」的隐式依赖，而解析路径是开机广播里最先跑的代码。
+     */
+    private const val DEFAULT_TITLE = "做了么"
+
     /** 「用户点了哪条通知」的键（MainActivity 写，插件读一次即清空） */
     private const val KEY_PENDING_OPEN = "pending_open_todo"
 
@@ -80,56 +105,118 @@ object ReminderStore {
     /**
      * 读取磁盘上的提醒列表。
      *
-     * 版本不匹配或解析失败都返回空列表：提醒是派生数据，宁可这次不响也不要崩溃，
-     * 用户下次打开应用时前台会重新编译并排程。
+     * **宽容解析**：这条路径是「覆盖安装之后唯一的救生索」。
+     * 旧版本（v1 格式）根本没写 `alarms_version` 键（读到的是 0），而包替换时
+     * 系统会把已排的 AlarmManager 闹钟全部清掉，接着 `BootReceiver` 被
+     * `MY_PACKAGE_REPLACED` 叫醒 → 调这里 → 如果这时返回空列表，
+     * 用户不主动打开应用就**一条提醒都不会响**，而且一行日志都没有。
+     *
+     * 所以：
+     * - `version` 缺失或 `< FORMAT_VERSION`（旧格式）→ 照常读出，逐条按旧形状兜底；
+     * - `version > FORMAT_VERSION`（未来格式，本版本不认识）→ 才返回空；
+     * - 单条解析失败只丢那一条，绝不让整张表一起消失。
      *
      * @param context 任意 Context
      */
-    fun load(context: Context): List<AlarmRecord> {
+    fun load(context: Context): List<AlarmRecord> = loadWithStats(context).records
+
+    /**
+     * 同 [load]，但额外回报「丢弃了多少条」，供界面显示可观测信号。
+     *
+     * 为什么要这个数字：这条路径没法在 CI 里跑真实 Kotlin，
+     * 一旦将来又把格式改坏、解析静默失效，用户只会「觉得提醒没响」。
+     * 所以必须在应用里能直接看到「有 N 条旧提醒没能恢复」。
+     *
+     * @param context 任意 Context
+     */
+    fun loadWithStats(context: Context): LoadResult {
         val store = prefs(context)
         val version = store.getInt(KEY_VERSION, 0)
-        if (version != FORMAT_VERSION) {
-            if (version != 0) {
-                Log.w(TAG, "存盘格式版本 $version != $FORMAT_VERSION，丢弃旧提醒记录")
-            }
-            return emptyList()
+        if (version > FORMAT_VERSION) {
+            Log.e(TAG, "存盘格式版本 $version 高于本版本 $FORMAT_VERSION，本次无法解析（提醒会缺失）")
+            return LoadResult(emptyList(), 0)
+        }
+        if (version in 1 until FORMAT_VERSION) {
+            Log.i(TAG, "读到旧格式提醒记录（v$version），按宽容模式解析")
         }
 
-        val raw = store.getString(KEY_ALARMS, null) ?: return emptyList()
+        val raw = store.getString(KEY_ALARMS, null) ?: return LoadResult(emptyList(), 0)
         if (raw.isEmpty()) {
-            return emptyList()
+            return LoadResult(emptyList(), 0)
         }
 
         return try {
             val array = JSONArray(raw)
             val records = ArrayList<AlarmRecord>(array.length())
+            var dropped = 0
             for (index in 0 until array.length()) {
-                val item = array.optJSONObject(index) ?: continue
-                val id = item.optInt("id", 0)
-                val fireAt = item.optLong("fireAt", 0L)
-                // 非法条目直接丢弃：宁可少一条，也不要在 AlarmManager 里排一个错误时间
-                if (id <= 0 || fireAt <= 0L) {
+                val item = array.optJSONObject(index)
+                val record = if (item == null) null else parseRecord(item)
+                if (record == null) {
+                    dropped += 1
                     continue
                 }
-                records.add(
-                    AlarmRecord(
-                        id = id,
-                        todoId = item.optString("todoId", ""),
-                        title = item.optString("title", ""),
-                        deadline = item.optLong("deadline", fireAt),
-                        fireAt = fireAt
-                    )
-                )
+                records.add(record)
             }
-            records
+            if (records.isEmpty() && dropped > 0) {
+                // 「有数据但一条都没解析出来」= 格式又一次变了，必须留下 ERROR 级日志
+                Log.e(TAG, "存盘里有 $dropped 条提醒记录，但一条都没能解析（格式可能已变）")
+            }
+            LoadResult(records, dropped)
         } catch (error: Exception) {
             Log.e(TAG, "读取本地提醒记录失败，按空列表处理", error)
-            emptyList()
+            LoadResult(emptyList(), 0)
         }
     }
 
     /**
+     * 解析单条提醒记录（同时兼容 v2 与旧格式）。
+     *
+     * v2 形状：`{id, todoId, title, deadline, fireAt}`。
+     * 旧格式：`{id, title, body, fireAt}` —— 有 `body`，没有 `todoId` / `deadline`。
+     * 旧记录的 `body` 是当时算好的文案（「还有 1 小时截止」这类），
+     * 虽然不如现算精确，但比一条都不响好得多，所以原样带进 [AlarmRecord.legacyBody]。
+     *
+     * **这里刻意不分「v2 分支 / 旧格式分支」，五个键全部无条件尝试读取。**
+     * 原因是一条旧记录被 [save] 之后，磁盘上是「v2 形状 + 多一个 body 键」
+     * （`todoId` / `deadline` 都写了，`body` 也写了）——正是 save/load 的对称性。
+     * 如果将来有人把这里拆成两个分支，并且只让「旧格式分支」读 `body`，
+     * 那条记录下次就会被判成 v2、`legacyBody` 丢掉，正文退回现算口径；
+     * 而它的 `deadline` 是 0，于是弹出「已逾期 56 年」。
+     * 所以「两个分支都要读 body」不是防御性编程，是**存盘必须能被自己读回来**的硬要求。
+     *
+     * @param item 单条 JSON
+     * @return 解析结果；非法条目返回 null（宁可少一条，也不要在系统里排错误时间）
+     */
+    private fun parseRecord(item: JSONObject): AlarmRecord? {
+        val id = item.optInt("id", 0)
+        val fireAt = item.optLong("fireAt", 0L)
+        if (id <= 0 || fireAt <= 0L) {
+            return null
+        }
+        val title = item.optString("title", "").ifEmpty { DEFAULT_TITLE }
+        val todoId = item.optString("todoId", "")
+        // v2 记录才有 deadline；旧格式没有，保持 0 表示「不知道」
+        val deadline = item.optLong("deadline", 0L)
+        // 旧格式的已算好正文。**与版本无关地读**：save() 会把 legacyBody 写回 body，
+        // 所以「已经救回来的旧记录」在磁盘上是 v2 形状 + body 键，必须还能读回来。
+        val body = item.optString("body", "").ifEmpty { null }
+
+        return AlarmRecord(
+            id = id,
+            todoId = todoId,
+            title = title,
+            deadline = deadline,
+            fireAt = fireAt,
+            legacyBody = body
+        )
+    }
+
+    /**
      * 覆盖写入提醒列表（连同格式版本号）。
+     *
+     * 永远写 v2 形状；旧格式记录里那句「已算好的正文」（[AlarmRecord.legacyBody]）
+     * 也一并透传，否则下次开机它就丢了，通知又变回现算口径。
      *
      * @param context 任意 Context
      * @param alarms 待保存的提醒
@@ -143,12 +230,33 @@ object ReminderStore {
             item.put("title", alarm.title)
             item.put("deadline", alarm.deadline)
             item.put("fireAt", alarm.fireAt)
+            // 只有从旧格式救回来的记录才有这一步；新记录不写这个键
+            alarm.legacyBody?.let { item.put("body", it) }
             array.put(item)
         }
         prefs(context).edit()
             .putInt(KEY_VERSION, FORMAT_VERSION)
             .putString(KEY_ALARMS, array.toString())
             .apply()
+    }
+
+    /**
+     * 取某条提醒在旧格式里保存的、已经算好的正文。
+     *
+     * 只有 [AlarmReceiver] 在收到「deadline 为 0」的旧记录时才会调用；
+     * 正常（v2）记录不会走这条路径，所以不影响常规触发的性能。
+     *
+     * @param context 任意 Context
+     * @param alarmId 提醒 id
+     * @return 旧正文；没有则为 null
+     */
+    fun findLegacyBody(context: Context, alarmId: Int): String? {
+        return try {
+            load(context).firstOrNull { it.id == alarmId }?.legacyBody
+        } catch (error: Exception) {
+            Log.w(TAG, "读取旧格式正文失败 id=$alarmId", error)
+            null
+        }
     }
 
     /**

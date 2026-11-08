@@ -6,6 +6,7 @@ import {
   ALARM_HORIZON_MS,
   ALARM_ID_MAX,
   MAX_ALARMS,
+  MAX_INSTANCES_PER_TODO,
   compileAlarms,
   compileAlarmsWithStats,
   countPendingAlarms,
@@ -40,6 +41,7 @@ function makeTodo(id: string, overrides: Partial<Todo> = {}): Todo {
     id,
     title: `待办 ${id}`,
     content: '',
+    advanceReminder: true,
     deadline: DEADLINE,
     done: false,
     repeat: NO_REPEAT,
@@ -117,15 +119,19 @@ describe('重复任务展开：30 天时间窗', () => {
     expect(alarms).toHaveLength(instanceCount * 6);
   });
 
-  it('每 6 小时任务：20 天窗内 80 个实例 × 3 档 = 240 条，恰好顶到全局上限', () => {
+  it('每 6 小时任务：实例数被 24 个上限兜住（30 天窗内本可排 80 个），3 档共 72 条', () => {
     const todo = makeTodo('interval-6h', {
       deadline: DEADLINE,
       repeat: { kind: 'interval', intervalMs: 6 * HOUR_MS },
     });
     const alarms = compileAlarms([todo], NOW);
 
-    expect(new Set(alarms.map((alarm) => alarm.deadline)).size).toBe(80);
-    expect(alarms).toHaveLength(MAX_ALARMS);
+    // 只有 6 小时周期一条待办，但也不能无限展开：未来 30 天里本该有 80 个实例，
+    // 被 MAX_INSTANCES_PER_TODO（24）截住 —— 这是「一条高频任务不能吃光全局名额」的第一道闸。
+    // 更远的实例由下次打开应用续排（与「重复任务只展开 30 天」同一套取舍）。
+    expect(new Set(alarms.map((alarm) => alarm.deadline)).size).toBe(MAX_INSTANCES_PER_TODO);
+    expect(alarms).toHaveLength(MAX_INSTANCES_PER_TODO * 3);
+    expect(alarms).toHaveLength(72);
     expect(alarms.length).toBeLessThanOrEqual(MAX_ALARMS);
   });
 

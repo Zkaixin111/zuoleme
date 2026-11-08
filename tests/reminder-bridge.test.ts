@@ -99,6 +99,7 @@ function makeTodo(id: string, overrides: Partial<Todo> = {}): Todo {
     id,
     title: `待办 ${id}`,
     content: '',
+    advanceReminder: true,
     deadline: NOW + 30 * DAY_MS,
     done: false,
     repeat: NO_REPEAT,
@@ -248,6 +249,8 @@ describe('授权状态读取的字段映射', () => {
       notifications: true,
       exactAlarm: false,
       batteryOptimized: true,
+      // P1-2 新增的可观测信号：原生读盘时有多少条旧提醒没能恢复（0 = 一切正常）
+      droppedAlarmCount: 0,
     });
   });
 

@@ -1,9 +1,12 @@
+import { useEffect, useRef } from 'react';
 import { MAX_INTERVAL_MS, MIN_INTERVAL_MS, normalizeWeekdays } from '../../shared/repeat';
 import type { RepeatRule } from '../../shared/types';
 
 export interface RepeatPickerProps {
   value: RepeatRule;
   onChange: (value: RepeatRule) => void;
+  /** 禁用（没有截止时间时重复规则无意义） */
+  disabled?: boolean;
 }
 
 /** 分段控件的五个选项 */
@@ -52,11 +55,40 @@ function splitInterval(intervalMs: number): { amount: number; unit: IntervalUnit
  * 五段：不重复 / 每天 / 每周 / 每月 / 每隔。
  * 选「每周」露出 7 个周几；选「每月」露出 1–31；选「每隔」露出数字 + 单位。
  * 所有取值都在 15 分钟 ~ 30 天之间被夹紧，避免产生排不出来的规则。
+ *
+ * 两个容易被用户骂的细节在这里处理：
+ * 1. **每种类型记住上一次的选择**：「每周 → 不重复 → 每周」不该把已选的星期重置成今天；
+ * 2. **不允许把周几全部取消**：空数组在存储层是非法的（会退化成「不重复」），
+ *    与其让用户点半天最后被一个错误拦住，不如点掉最后一天时直接不动。
  */
-export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Element {
-  const interval = value.kind === 'interval' ? splitInterval(value.intervalMs) : { amount: 1, unit: 'day' as IntervalUnit };
+export function RepeatPicker({ value, onChange, disabled = false }: RepeatPickerProps): JSX.Element {
+  const interval =
+    value.kind === 'interval'
+      ? splitInterval(value.intervalMs)
+      : { amount: 1, unit: 'day' as IntervalUnit };
+
+  // 每种类型最后一次的合法选择（切走再切回来时恢复，而不是重置成默认值）
+  const lastWeekly = useRef<number[]>([]);
+  const lastMonthly = useRef<number | null>(null);
+  const lastInterval = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (value.kind === 'weekly') {
+      const weekdays = normalizeWeekdays(value.weekdays);
+      if (weekdays.length > 0) {
+        lastWeekly.current = weekdays;
+      }
+    } else if (value.kind === 'monthly') {
+      lastMonthly.current = value.dayOfMonth;
+    } else if (value.kind === 'interval') {
+      lastInterval.current = value.intervalMs;
+    }
+  }, [value]);
 
   const handleMode = (mode: RepeatRule['kind']): void => {
+    if (disabled) {
+      return;
+    }
     switch (mode) {
       case 'none':
         onChange({ kind: 'none' });
@@ -65,17 +97,16 @@ export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Elemen
         onChange({ kind: 'daily' });
         break;
       case 'weekly': {
-        // 默认选「今天」，用户再按需要加减
-        const today = new Date().getDay();
-        const weekdays = value.kind === 'weekly' ? normalizeWeekdays(value.weekdays) : [today];
-        onChange({ kind: 'weekly', weekdays: weekdays.length > 0 ? weekdays : [today] });
+        // 有历史选择就恢复它；第一次进来才默认「今天」
+        const remembered = lastWeekly.current.length > 0 ? lastWeekly.current : [new Date().getDay()];
+        onChange({ kind: 'weekly', weekdays: [...remembered] });
         break;
       }
       case 'monthly':
-        onChange({ kind: 'monthly', dayOfMonth: new Date().getDate() });
+        onChange({ kind: 'monthly', dayOfMonth: lastMonthly.current ?? new Date().getDate() });
         break;
       case 'interval':
-        onChange({ kind: 'interval', intervalMs: UNIT_MS.day });
+        onChange({ kind: 'interval', intervalMs: lastInterval.current ?? UNIT_MS.day });
         break;
       default:
         onChange({ kind: 'none' });
@@ -83,13 +114,23 @@ export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Elemen
   };
 
   const toggleWeekday = (day: number): void => {
+    if (disabled) {
+      return;
+    }
     const current = value.kind === 'weekly' ? normalizeWeekdays(value.weekdays) : [];
-    const next = current.includes(day) ? current.filter((item) => item !== day) : [...current, day].sort((a, b) => a - b);
-    // 至少留一天：空数组在存储层是非法的（会退化成不重复）
+    const selected = current.includes(day);
+    if (selected && current.length === 1) {
+      // 最后一天不许取消：空数组会被存储层判为非法，等于让用户白点一场
+      return;
+    }
+    const next = selected ? current.filter((item) => item !== day) : [...current, day].sort((a, b) => a - b);
     onChange({ kind: 'weekly', weekdays: next });
   };
 
   const updateInterval = (amount: number, unit: IntervalUnit): void => {
+    if (disabled) {
+      return;
+    }
     const safeAmount = Number.isFinite(amount) ? Math.max(1, Math.trunc(amount)) : 1;
     const raw = safeAmount * UNIT_MS[unit];
     const clamped = Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, raw));
@@ -97,7 +138,7 @@ export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Elemen
   };
 
   return (
-    <div>
+    <div className={disabled ? 'pointer-events-none opacity-40' : undefined} aria-disabled={disabled}>
       <div className="flex flex-wrap gap-1.5">
         {MODES.map((mode) => {
           const active = value.kind === mode.key;
@@ -105,6 +146,8 @@ export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Elemen
             <button
               key={mode.key}
               type="button"
+              disabled={disabled}
+              aria-pressed={active}
               onClick={() => handleMode(mode.key)}
               className={`rounded-control border px-3 py-2 text-[13px] ${
                 active ? 'border-accent bg-accent-soft text-accent' : 'border-line-strong bg-surface text-soft'
@@ -124,7 +167,9 @@ export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Elemen
               <button
                 key={label}
                 type="button"
+                disabled={disabled}
                 onClick={() => toggleWeekday(day)}
+                aria-pressed={active}
                 aria-label={`周${label}`}
                 className={`h-9 w-9 rounded-full border text-[13px] ${
                   active ? 'border-accent bg-accent text-white' : 'border-line-strong bg-surface text-soft'
@@ -143,6 +188,7 @@ export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Elemen
             每月几号
             <select
               className="field mt-1"
+              disabled={disabled}
               value={value.dayOfMonth}
               onChange={(event) => onChange({ kind: 'monthly', dayOfMonth: Number(event.target.value) })}
             >
@@ -166,11 +212,13 @@ export function RepeatPicker({ value, onChange }: RepeatPickerProps): JSX.Elemen
             type="number"
             min={1}
             className="field w-20 text-center"
+            disabled={disabled}
             value={interval.amount}
             onChange={(event) => updateInterval(Number(event.target.value), interval.unit)}
           />
           <select
             className="field flex-1"
+            disabled={disabled}
             value={interval.unit}
             onChange={(event) => updateInterval(interval.amount, event.target.value as IntervalUnit)}
           >

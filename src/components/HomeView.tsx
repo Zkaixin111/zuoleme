@@ -1,16 +1,18 @@
 import { formatRemaining } from '../../shared/format';
 import { groupTodos } from '../lib/group-todos';
 import type { Todo } from '../../shared/types';
-import { PinnedCard } from './PinnedCard';
+import { PinnedCard, type PinnedTodo } from './PinnedCard';
 import { TodoRow } from './TodoRow';
 
 export interface HomeViewProps {
   todos: Todo[];
   now: number;
-  /** 最近一件未完成的事 */
-  pinned: Todo | null;
+  /** 最近一件有截止时间的未完成事项 */
+  pinned: PinnedTodo | null;
   /** 常驻卡片上的「还有几档提醒」 */
   pinnedReminderCount: number;
+  /** 未完成且没有截止时间的事项数量（空状态提示用） */
+  undatedCount: number;
   loading: boolean;
   busyId: string | null;
   onCreate: () => void;
@@ -33,6 +35,7 @@ export function HomeView({
   now,
   pinned,
   pinnedReminderCount,
+  undatedCount,
   loading,
   busyId,
   onCreate,
@@ -56,6 +59,7 @@ export function HomeView({
         todo={pinned}
         now={now}
         reminderCount={pinnedReminderCount}
+        undatedCount={undatedCount}
         busy={busyId === pinned?.id}
         onDone={onToggle}
         onOpen={onOpen}
@@ -98,7 +102,8 @@ export function HomeView({
 
         {pinned ? (
           <p className="px-1 text-[11px] leading-relaxed text-faint">
-            最近一件事还剩 {formatRemaining(pinned.deadline - now)}，到期前会按档位静音提醒。
+            最近一件事还剩 {formatRemaining(pinned.deadline - now)}，
+            {pinned.advanceReminder ? '到期前会按档位静音提醒。' : '只在到点那一刻静音提醒一次。'}
           </p>
         ) : null}
       </div>

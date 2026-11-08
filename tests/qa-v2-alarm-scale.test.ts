@@ -3,7 +3,14 @@ import { DAY_MS, HOUR_MS, reminderOffsetsFor } from '../shared/reminders';
 import { nextOccurrence } from '../shared/repeat';
 import type { RepeatRule, Todo } from '../shared/types';
 import { NO_REPEAT } from '../shared/types';
-import { ALARM_ID_MAX, MAX_ALARMS, compileAlarms, compileAlarmsWithStats } from '../src/lib/alarms';
+import {
+  ALARM_ID_MAX,
+  MAX_ALARMS,
+  MAX_INSTANCES_PER_TODO,
+  MIN_ALARMS_PER_TODO,
+  compileAlarms,
+  compileAlarmsWithStats,
+} from '../src/lib/alarms';
 
 /**
  * QA 独立复验：真实规模下的闹钟编译（对应验收要求「支持定时任务」+ 系统排程上限）。
@@ -29,6 +36,7 @@ function makeTodo(id: string, overrides: Partial<Todo> = {}): Todo {
     id,
     title: `待办 ${id}`,
     content: '',
+    advanceReminder: true,
     deadline: NOW + 10 * DAY_MS,
     done: false,
     repeat: NO_REPEAT,
@@ -71,7 +79,9 @@ function build300(): Todo[] {
 /**
  * 独立计算「理论候选闹钟」（不复用被测的 compileAlarms）。
  *
- * 只依赖共享层的档位定义与重复规则推进，用于给截断逻辑对账。
+ * 只依赖共享层的档位定义、重复规则推进与**实例数上限**（`MAX_INSTANCES_PER_TODO`），
+ * 用于给截断逻辑对账：`truncated` 必须等于「这里算出的总数 − 最终保留数」。
+ * 实例上限也在这里复刻，因为它是产品规格的一部分（一条待办最多展开 24 个实例）。
  *
  * @param todos 待办列表
  * @param now 当前时间
@@ -81,7 +91,8 @@ function referenceCandidates(todos: readonly Todo[], now: number): number[] {
   const horizon = now + 30 * DAY_MS;
 
   for (const todo of todos) {
-    if (todo.done) {
+    // 类型窄化：不设截止时间的待办不产生任何实例（这条分支在 P1-1 之后同样存在）
+    if (todo.done || todo.deadline === null) {
       continue;
     }
     const offsets = reminderOffsetsFor(todo.repeat);
@@ -103,7 +114,11 @@ function referenceCandidates(todos: readonly Todo[], now: number): number[] {
         cursor = next;
         guard += 1;
       }
-      while (Number.isFinite(cursor) && cursor < horizon && deadlines.length < 10_000) {
+      while (
+        Number.isFinite(cursor) &&
+        cursor < horizon &&
+        deadlines.length < MAX_INSTANCES_PER_TODO
+      ) {
         deadlines.push(cursor);
         const next = nextOccurrence(cursor, todo.repeat, cursor);
         if (next === null || next <= cursor) {
@@ -237,8 +252,8 @@ describe('D2. MAX_ALARMS=240 截断：数量、计数与「取最早」三条都
   });
 });
 
-describe('D3. 已知风险（已上报 P1）：单条高频重复任务会吃掉几乎全部名额', () => {
-  it('一条「每 15 分钟」任务占掉 235/240 个名额，其它待办只剩下「7 天档」', () => {
+describe('D3. 两级配额：一条高频任务不能把全局名额吃光', () => {
+  it('1 条「每 15 分钟」+ 5 条 8 天后到期：一次性待办每件拿到完整 6 档，密集任务不超过 24 个实例', () => {
     const dense: Todo = makeTodo('dense', {
       deadline: NOW + 30 * 60_000,
       repeat: { kind: 'interval', intervalMs: 15 * 60_000 },
@@ -255,18 +270,76 @@ describe('D3. 已知风险（已上报 P1）：单条高频重复任务会吃掉
       counts.set(alarm.todoId, (counts.get(alarm.todoId) ?? 0) + 1);
     }
 
-    expect(result.alarms).toHaveLength(MAX_ALARMS);
-    // 一条 15 分钟间隔的任务展开 240 个实例（每实例只有 due 一档），吃掉 235 个名额
-    expect(counts.get('dense')).toBe(235);
-    // 其余 5 条待办每件只剩 1 条：恰好是「7 天档」（deadline - 7d，落在 24~28 小时后）
+    // 1. 全局不超上限
+    expect(result.alarms.length).toBeLessThanOrEqual(MAX_ALARMS);
+    // 2. 密集任务被实例上限兜住：24 个实例 × 1 档（15 分钟的周期只留 due）= 24 条
+    expect(counts.get('dense')).toBe(MAX_INSTANCES_PER_TODO);
+    expect(new Set(result.alarms.filter((alarm) => alarm.todoId === 'dense').map((alarm) => alarm.deadline)).size).toBe(
+      MAX_INSTANCES_PER_TODO,
+    );
+    expect(counts.get('dense')).toBeLessThanOrEqual(MAX_INSTANCES_PER_TODO * 3);
+    // 3. 其余 5 条待办一条不少地拿到完整六档 —— 修复前每件只剩 1 条（7 天档）
     for (const todo of normal) {
-      expect(counts.get(todo.id), `${todo.id} 的提醒被全部挤掉`).toBe(1);
-      const kept = result.alarms.filter((alarm) => alarm.todoId === todo.id);
-      expect(kept[0].kind).toBe('7d');
-      expect(kept[0].fireAt).toBe(todo.deadline - 7 * DAY_MS);
+      expect(counts.get(todo.id), `${todo.id} 的提醒被挤掉了`).toBe(6);
+      const kinds = result.alarms.filter((alarm) => alarm.todoId === todo.id).map((alarm) => alarm.kind);
+      expect(kinds).toEqual(['7d', '3d', '1d', '3h', '1h', 'due']);
     }
-    // 丢掉的是「3 天 / 1 天 / 3 小时 / 1 小时 / 到点」这 5 档 —— 也就是最该响的那几档
-    expect(result.truncated).toBe(30);
+    // 配额没有真正丢弃任何候选，所以这里如实为 0
+    expect(result.truncated).toBe(0);
+  });
+
+  it('只有一条待办时它仍能拿到足够名额（受 MAX_INSTANCES_PER_TODO 约束，而不是被平均分配压到 8 条）', () => {
+    const dense: Todo = makeTodo('dense', {
+      deadline: NOW + 30 * 60_000,
+      repeat: { kind: 'interval', intervalMs: 6 * HOUR_MS },
+    });
+
+    const result = compileAlarmsWithStats([dense], NOW);
+
+    // 24 个实例 × 3 档（3h / 1h / due）= 72 条，但第 1 个实例的 deadline 是 NOW+30min，
+    // 它的 3h 档（NOW-2.5h）已经过去、不能排（否则用户会立刻收到一条「还有 3 小时截止」的假提醒），
+    // 所以实际是 23 × 3 + 1 = 70 条，仍远大于 MIN_ALARMS_PER_TODO
+    expect(result.alarms).toHaveLength(MAX_INSTANCES_PER_TODO * 3 - 2);
+    expect(result.alarms.length).toBeGreaterThan(MIN_ALARMS_PER_TODO);
+    expect(result.truncated).toBe(0);
+  });
+
+  it('100 条一次性待办：全局截断到 240 条，但没有任何一条待办彻底失声', () => {
+    const todos: Todo[] = [];
+    for (let index = 0; index < 100; index += 1) {
+      todos.push(makeTodo(`bulk-${index}`, { deadline: NOW + 8 * DAY_MS + index * HOUR_MS }));
+    }
+
+    const result = compileAlarmsWithStats(todos, NOW);
+    const counts = new Map<string, number>();
+    for (const alarm of result.alarms) {
+      counts.set(alarm.todoId, (counts.get(alarm.todoId) ?? 0) + 1);
+    }
+
+    expect(result.alarms).toHaveLength(MAX_ALARMS);
+    // 100 × 6 = 600 条候选，最终留 240 条 → 丢弃 360 条（含单条配额与全局截断两部分）
+    expect(result.truncated).toBe(600 - MAX_ALARMS);
+
+    // 0 条待办数必须为 0：截断绝不能把某条待办彻底抹掉（这是本次修复要防的核心事故）
+    expect(todos.filter((todo) => (counts.get(todo.id) ?? 0) === 0)).toHaveLength(0);
+    // 每条至少 1 档。1 档具体落在哪个档位由各待办的 fireAt 交错决定，不做更强承诺 ——
+    // 更强的「每条 ≥2 档」与「保留最早的 240 条」在数学上不相容：
+    // 待办按 1 小时错开、档位边界必然交错，第 240 名的切点一定切在某个档位边界上。
+    //
+    // 实测直方图（240 名额 / 100 条待办 / 每条 6 档），这个分布是**已知且已接受**的：
+    //   1 条:20 / 2 条:48 / 3 条:21 / 4 条:2 / 5 条:1 / 6 条:8 / **0 条:0**
+    for (const todo of todos) {
+      expect(counts.get(todo.id) ?? 0, `${todo.id} 一条提醒都没拿到`).toBeGreaterThanOrEqual(1);
+    }
+
+    // 为什么**不做**「按待办轮转」（曾经考虑过的"更公平"方案）：
+    // 轮转意味着每条待办先拿自己最早的那 2 条，而「最早」恒为 7d 与 3d 档 ——
+    // 结果是 100 条待办全部失去「到点」那一档，谁都收不到最该收到的那条通知。
+    // 用「20 条待办只剩 7d 一档」换「100 条待办全都没有到点提醒」是明显的负优化。
+    // 「取最早」的真实语义是**紧迫性优先**：不管有多少条待办，时间上最近的提醒一定排得上，
+    // 这比「人人均摊」更符合「不漏事」的产品目标。所以第二级保持纯 fireAt 升序截断不变。
+    const dueCount = result.alarms.filter((alarm) => alarm.kind === 'due').length;
+    expect(dueCount, '「到点」档必须有人拿到（轮转方案会让它为 0）').toBeGreaterThan(0);
   });
 });
 

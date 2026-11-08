@@ -19,12 +19,16 @@ export interface NativePermissionState {
   exactAlarm: boolean;
   /** 是否被系统电池优化限制（true = 被限制，不理想） */
   batteryOptimized: boolean;
+  /** 磁盘上有多少条提醒记录解析不出来（正常 0；> 0 说明提醒已经丢了） */
+  droppedAlarmCount?: number;
 }
 
 /** 界面用：在原生状态外补一个「当前环境是否支持」 */
 export interface PermissionSnapshot extends NativePermissionState {
   /** false 表示不是 APK 环境（浏览器），系统提醒不可用 */
   supported: boolean;
+  /** 未能恢复的旧提醒条数（正常 0） */
+  droppedAlarmCount: number;
 }
 
 /**
@@ -78,6 +82,7 @@ const WEB_PERMISSION_STATE: PermissionSnapshot = {
   notifications: false,
   exactAlarm: false,
   batteryOptimized: false,
+  droppedAlarmCount: 0,
 };
 
 /** 是否运行在原生 App（APK）里 */
@@ -166,6 +171,10 @@ export async function readPermissionState(): Promise<PermissionSnapshot> {
       notifications: state.notifications === true,
       exactAlarm: state.exactAlarm === true,
       batteryOptimized: state.batteryOptimized === true,
+      droppedAlarmCount:
+        typeof state.droppedAlarmCount === 'number' && Number.isFinite(state.droppedAlarmCount)
+          ? state.droppedAlarmCount
+          : 0,
     };
   } catch {
     return { ...WEB_PERMISSION_STATE };

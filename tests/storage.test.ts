@@ -152,7 +152,7 @@ describe('容错读取', () => {
     expect(readTodos()).toHaveLength(1);
   });
 
-  it('脏数据（缺 title 或缺 deadline）被跳过，其余照常读出', () => {
+  it('脏数据只丢真正坏的那条：缺 title 被跳过，缺 deadline 是合法的「无期限」', () => {
     storage.setItem(
       STORAGE_KEY,
       JSON.stringify({
@@ -166,7 +166,9 @@ describe('容错读取', () => {
     );
 
     const todos = readTodos();
-    expect(todos.map((todo) => todo.id)).toEqual(['ok']);
+    // 有时间的排前面，无时间的排后面（B1 的新语义）；缺 title 的那条仍然被丢掉
+    expect(todos.map((todo) => todo.id)).toEqual(['ok', 'no-deadline']);
+    expect(todos[1].deadline).toBeNull();
   });
 
   it('重复 id 只保留第一条', () => {
@@ -189,6 +191,7 @@ describe('sortTodos', () => {
     const base = {
       title: '待办',
       content: '',
+      advanceReminder: true,
       deadline: 0,
       done: false,
       repeat: { kind: 'none' as const },
@@ -293,27 +296,30 @@ describe('api.updateTodo：完成语义', () => {
     });
 
     const updated = await api.updateTodo(created.id, { done: true });
+    const updatedDeadline = updated.deadline as number;
 
     expect(updated.done).toBe(false);
-    expect(updated.deadline).toBeGreaterThan(Date.now());
-    expect(updated.deadline).toBeGreaterThan(created.deadline);
+    expect(updatedDeadline).toBeGreaterThan(Date.now());
+    expect(updatedDeadline).toBeGreaterThan(deadline);
     // 每天的推进步长就是 1 天
-    expect(updated.deadline - created.deadline).toBe(DAY_MS);
+    expect(updatedDeadline - deadline).toBe(DAY_MS);
     expect(updated.repeat).toEqual({ kind: 'daily' });
   });
 
   it('每周任务完成 → 推进到下一个被选中的星期', async () => {
+    const deadline = Date.now() + DAY_MS;
     const created = await api.createTodo({
       title: '每周复盘',
-      deadline: Date.now() + DAY_MS,
+      deadline,
       repeat: { kind: 'weekly', weekdays: [1, 4] },
     });
 
     const updated = await api.updateTodo(created.id, { done: true });
+    const updatedDeadline = updated.deadline as number;
 
     expect(updated.done).toBe(false);
-    expect(updated.deadline).toBeGreaterThan(created.deadline);
-    expect(updated.deadline - created.deadline).toBeLessThanOrEqual(7 * DAY_MS);
+    expect(updatedDeadline).toBeGreaterThan(deadline);
+    expect(updatedDeadline - deadline).toBeLessThanOrEqual(7 * DAY_MS);
   });
 
   it('取消完成 → done = false，deadline 不动', async () => {

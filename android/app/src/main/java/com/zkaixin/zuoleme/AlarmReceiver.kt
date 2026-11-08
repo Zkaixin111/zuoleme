@@ -42,7 +42,10 @@ class AlarmReceiver : BroadcastReceiver() {
 
         try {
             val remaining = if (deadline > 0L) deadline - System.currentTimeMillis() else 0L
-            val body = ReminderNotifier.remainingText(remaining)
+            // 旧格式（v1）救回来的记录没有 deadline（它是 0），正文是当时就算好的那句。
+            // 绝不能拿 0 去算剩余时间 —— 那会得到「已逾期 56 年」这种荒谬文案。
+            val legacyBody = if (deadline > 0L) null else ReminderStore.findLegacyBody(context, alarmId)
+            val body = legacyBody ?: ReminderNotifier.remainingText(remaining)
             ReminderNotifier.notifyReminder(context, alarmId, todoId, title, body)
         } catch (error: Exception) {
             Log.e(TAG, "发送提醒通知失败 id=$alarmId", error)

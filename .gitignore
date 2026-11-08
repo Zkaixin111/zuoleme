@@ -26,5 +26,8 @@ Thumbs.db
 npm-debug.log*
 coverage/
 
+# 协作工具的本地会话目录（不属于项目内容）
+.workbuddy/
+
 # Cloudflare 凭据（仅本地，勿提交）
 .env.cloudflare

@@ -56,7 +56,9 @@ function toTodo(row: TodoRow): TodoWithNextFire {
     // Worker 已停用：老表没有 content 列，也不支持重复规则，这里按默认值兜底
     content: row.content ?? '',
     repeat: { kind: 'none' },
+    // Web Push 时代的数据总有 deadline；新模型的 null 语义在 Worker 侧不出现
     deadline: row.deadline,
+    advanceReminder: true,
     done: row.done === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

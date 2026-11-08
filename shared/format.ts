@@ -15,11 +15,16 @@ function pad2(value: number): string {
  * 把剩余毫秒格式化为人类可读的紧凑中文。
  *
  * 规则：
- * - 已经到期（ms <= 0）→「已逾期」
+ * - 已经到期（ms <= 0）：
+ *   - 逾期不足 1 分钟 →「刚刚到点」
+ *   - 否则 →「已逾期 40 分钟」/「已逾期 3 天 2 小时」（沿用同一套天/小时/分钟收敛规则）
  * - 不足 1 分钟 →「不到1分钟」
  * - 以天为单位：「3天2小时」（整小时为 0 时只显示「3天」）
  * - 以小时为单位：「2小时30分钟」（整分钟为 0 时只显示「2小时」）
  * - 仅分钟：「45分钟」
+ *
+ * **必须与 Kotlin 侧 `ReminderNotifier.remainingText` 逐值一致**：
+ * 同一个时刻，应用内看到「已逾期 40 分钟」，通知栏就不能写别的。
  *
  * @param ms 剩余毫秒（可为负）
  */
@@ -28,9 +33,25 @@ export function formatRemaining(ms: number): string {
     return '—';
   }
   if (ms <= 0) {
-    return '已逾期';
+    const overdue = -ms;
+    if (overdue < MINUTE_MS) {
+      return '刚刚到点';
+    }
+    return `已逾期 ${formatDuration(overdue)}`;
   }
+  return formatDuration(ms);
+}
 
+/**
+ * 把一段**非负**时长格式化为「天/小时/分钟」的紧凑中文。
+ *
+ * 收敛规则（刻意的，不要「优化」成更精确）：
+ * - 有天数时丢掉小时以下的零头：「1天」（而不是「1天0小时30分钟」）
+ * - 有小时无天数时显示分钟：「2小时30分钟」
+ *
+ * @param ms 时长毫秒（必须 > 0）
+ */
+export function formatDuration(ms: number): string {
   const totalMinutes = Math.floor(ms / MINUTE_MS);
   if (totalMinutes < 1) {
     return '不到1分钟';

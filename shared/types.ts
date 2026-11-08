@@ -4,7 +4,9 @@
  * 数据模型只有一处真相：
  * - `title` 是「做什么」（必填，列表与通知里显示的就是它）；
  * - `content` 是「具体内容」（可空，只在详情页显示，**绝不进通知**）；
- * - `repeat` 描述这件事多久来一次，`deadline` 永远是「当前这一次」的截止时间。
+ * - `deadline` 是「当前这一次」的截止时间，**可以是 null**（用户主动选择「不设时间」）；
+ * - `advanceReminder` 决定要不要提前分档提醒，关掉后就只在到点那一刻提醒一次；
+ * - `repeat` 描述这件事多久来一次。
  */
 
 /** 提醒档位 */
@@ -42,8 +44,17 @@ export interface Todo {
   title: string;
   /** 具体内容，可空字符串，<= 2000 字 */
   content: string;
-  /** 「当前这一次」的截止时间，毫秒时间戳 */
-  deadline: number;
+  /**
+   * 「当前这一次」的截止时间，毫秒时间戳；**null = 用户主动选择「不设时间」**。
+   * 不设时间的待办不产生任何提醒，也不参与排序里的时间比较。
+   */
+  deadline: number | null;
+  /**
+   * 是否启用提前档位，默认 true。
+   * false = 只在到点那一刻提醒一次（不问「提前 7 天」这些档位）。
+   * 没有截止时间时该字段无意义，写入侧会被归位成 true。
+   */
+  advanceReminder: boolean;
   /** 一次性任务表示完成；重复任务恒为 false（完成 = 推进到下一次） */
   done: boolean;
   /** 重复规则 */
@@ -118,7 +129,10 @@ export interface PushSubscriptionJson {
 export interface CreateTodoBody {
   title: string;
   content?: string;
-  deadline: number;
+  /** null / 省略 = 不设截止时间 */
+  deadline?: number | null;
+  /** 省略 = 默认 true（提前提醒） */
+  advanceReminder?: boolean;
   repeat?: RepeatRule;
 }
 
@@ -126,7 +140,9 @@ export interface CreateTodoBody {
 export interface UpdateTodoBody {
   title?: string;
   content?: string;
-  deadline?: number;
+  /** 传 null = 清除截止时间（同时会强制把 repeat 归零） */
+  deadline?: number | null;
+  advanceReminder?: boolean;
   done?: boolean;
   repeat?: RepeatRule;
 }

@@ -48,6 +48,7 @@ function makeTodo(id: string, overrides: Partial<Todo> = {}): Todo {
     id,
     title: `待办 ${id}`,
     content: '',
+    advanceReminder: true,
     deadline: DEADLINE,
     done: false,
     repeat: NO_REPEAT,

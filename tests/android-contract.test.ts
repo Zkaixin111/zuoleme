@@ -69,20 +69,25 @@ describe('持久化：开机重建读的就是排程时写的（最致命的静�
     expect(BOOT_RECEIVER).toMatch(/ReminderStore\.scheduleAll\(context,\s*alarms\)/);
   });
 
-  it('load 与 save 字段一一对应（少存一个字段 = 重启后通知文案变默认值）', () => {
+  it('load 与 save 字段一一对应（多出的 body 只用于旧格式正文透传，不许再冒出第 7 个字段）', () => {
     const saved = captureAll(REMINDER_STORE, /item\.put\("(\w+)"/g).sort();
     const loaded = captureAll(REMINDER_STORE, /item\.opt(?:Int|Long|String)\("(\w+)"/g).sort();
 
-    // 五个字段：id 既是通知 id 也是 PendingIntent requestCode；
+    // 五个跨桥字段：id 既是通知 id 也是 PendingIntent requestCode；
     // todoId 用于点通知开详情页；deadline 用于触发时刻现算剩余时间。
-    expect(saved).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
-    expect(loaded).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
+    // 第六个 body 只在「从旧格式救回来的记录」上写回，用于保住那句已经算好的正文（P1-2）。
+    expect(saved).toEqual(['body', 'deadline', 'fireAt', 'id', 'title', 'todoId']);
+    expect(loaded).toEqual(saved);
   });
 
-  it('存盘格式带版本号，字段结构变动时旧记录整体丢弃（派生数据，宁可重排也不解析错位）', () => {
+  it('存盘格式带版本号；但旧格式必须宽容解析，只有「未来版本」才允许放弃（P1-2）', () => {
     expect(REMINDER_STORE).toMatch(/KEY_VERSION = "alarms_version"/);
     expect(REMINDER_STORE).toMatch(/FORMAT_VERSION = 2/);
-    expect(REMINDER_STORE).toMatch(/version != FORMAT_VERSION/);
+    // 病灶回归防线：曾经这里写的是 version != FORMAT_VERSION → 覆盖安装后全部静默失效
+    expect(REMINDER_STORE).not.toMatch(/version != FORMAT_VERSION/);
+    expect(REMINDER_STORE).toMatch(/version > FORMAT_VERSION/);
+    // 旧格式（缺 version 或 < 2）走宽容解析，而不是整体丢弃
+    expect(REMINDER_STORE).toMatch(/val legacyBody: String\? = null/);
   });
 
   it('排程顺序：先 load 旧记录 → 先 save 新列表 → 再取消旧 PendingIntent', () => {
@@ -160,7 +165,8 @@ describe('通知：id、渠道与重要性', () => {
     // 正文是「还有 X 截止 / 已逾期 X」，由 remainingText 现算
     expect(NOTIFIER).toMatch(/fun remainingText\(/);
     expect(NOTIFIER).toMatch(/"还有\$\{durationText\(remainingMs\)\}截止"/);
-    expect(NOTIFIER).toMatch(/"已逾期\$\{durationText\(overdue\)\}"/);
+    expect(NOTIFIER).toMatch(/"已逾期 \$\{durationText\(overdue\)\}"/);
+    expect(NOTIFIER).toMatch(/"刚刚到点"/);
     // 提醒记录里根本没有 content 字段（待办内容只进详情页）
     expect(REMINDER_STORE).not.toMatch(/put\("content"/);
     expect(NOTIFIER).not.toMatch(/optString\("content"/);
@@ -201,7 +207,7 @@ describe('通知：id、渠道与重要性', () => {
 });
 
 describe('JS ↔ Kotlin 的闹钟字段协议', () => {
-  it('JS 的 NativeAlarm 字段 = Kotlin 插件读取的字段 = Kotlin 落盘的字段', () => {
+  it('JS 的 NativeAlarm 字段 = Kotlin 插件读取的字段 = Kotlin 落盘的字段 + 仅本机的 legacyBody', () => {
     const interfaceBlock = BRIDGE.slice(
       BRIDGE.indexOf('export interface NativeAlarm'),
       BRIDGE.indexOf('}', BRIDGE.indexOf('export interface NativeAlarm'))
@@ -212,8 +218,11 @@ describe('JS ↔ Kotlin 的闹钟字段协议', () => {
     const storeKeys = captureAll(REMINDER_STORE, /item\.put\("(\w+)"/g).sort();
 
     expect(jsKeys).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
+    // 插件（JS → 原生）读的仍然只有这 5 个：legacyBody 是磁盘内部字段，不跨桥
     expect(pluginKeys).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
-    expect(storeKeys).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
+    // 落盘时多写一个 body（旧格式正文透传），其余完全一致
+    expect(storeKeys).toEqual(['body', 'deadline', 'fireAt', 'id', 'title', 'todoId']);
+    expect(storeKeys.filter((key) => !jsKeys.includes(key))).toEqual(['body']);
   });
 
   it('原生侧把「非法 id / 过去的 fireAt」当无效条目丢掉（不在系统里排错误时间）', () => {

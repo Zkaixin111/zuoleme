@@ -17,6 +17,12 @@ import type { CreateTodoBody, RepeatRule, Todo, UpdateTodoBody } from '../../sha
  * 迁移策略（**不做破坏性迁移**）：v2 不存在时读 v1，逐条补上
  * `content: ''` 与 `repeat: { kind: 'none' }` 后写入 v2，**v1 原样保留不删**。
  * 用户数据丢失是不可接受事故，留一份旧数据比省那点空间重要得多。
+ *
+ * **为什么加了 `deadline: number | null` 与 `advanceReminder` 却不升到 v3**：
+ * 这两个字段都能宽容补默认值（`advanceReminder` 缺失 → `true`，
+ * `deadline` 缺失/null → `null`），不需要任何迁移动作；
+ * 而刚修完「升级后闹钟全丢」这个 P1，再来一次版本切换就是重蹈覆辙 ——
+ * 版本号只在**必须改写已存在字段的语义**时才动。
  */
 
 /** 当前存储键 */
@@ -79,8 +85,12 @@ function readRaw(key: string): string | null {
 /**
  * 把任意一条数据规整成 Todo。
  *
- * **刻意宽松**：老数据没有 content / repeat，缺字段就补默认值，绝不因此丢弃整条待办。
- * 只有「id / title / deadline 缺失或类型错误」才判定为脏数据。
+ * **刻意宽松**：老数据没有 content / repeat / advanceReminder，缺字段就补默认值，
+ * 绝不因此丢弃整条待办。只有「id / title 缺失或类型错误」以及
+ * 「deadline 既不是数字也不是 null」才判定为脏数据。
+ *
+ * `deadline` 缺失与 `null` 都表示「不设时间」——这两个新字段都是**纯增量字段**，
+ * 所以存储版本保持 zuoleme.todos.v2 不动，不需要迁移动作（见文件头注释）。
  *
  * @param value 原始值
  */
@@ -96,18 +106,29 @@ function normalizeTodo(value: unknown): Todo | null {
   if (typeof candidate.title !== 'string') {
     return null;
   }
-  if (typeof candidate.deadline !== 'number' || !Number.isFinite(candidate.deadline)) {
+
+  let deadline: number | null;
+  if (candidate.deadline === undefined || candidate.deadline === null) {
+    deadline = null;
+  } else if (typeof candidate.deadline === 'number' && Number.isFinite(candidate.deadline)) {
+    deadline = candidate.deadline;
+  } else {
+    // 类型不对（比如 "abc"）：这是脏数据，丢掉这一条
     return null;
   }
 
   const now = Date.now();
+  const hasDeadline = deadline !== null;
   return {
     id: candidate.id,
     title: candidate.title,
     content: typeof candidate.content === 'string' ? candidate.content : '',
-    deadline: candidate.deadline,
+    deadline,
+    // 缺省视为「开启提前提醒」；没有截止时间时这个开关没有意义，归位 true
+    advanceReminder: hasDeadline && candidate.advanceReminder === false ? false : true,
     done: candidate.done === true,
-    repeat: normalizeRepeatRule(candidate.repeat),
+    // 重复需要时间锚点：没有 deadline 的待办一律按「不重复」处理
+    repeat: hasDeadline ? normalizeRepeatRule(candidate.repeat) : { kind: 'none' },
     createdAt: typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)
       ? candidate.createdAt
       : now,
@@ -125,11 +146,21 @@ function normalizeTodo(value: unknown): Todo | null {
  * @param raw 原始字符串
  */
 function parseTodos(raw: string): Todo[] {
+  return tryParseTodos(raw) ?? [];
+}
+
+/**
+ * 尝试解析一段存储文本。
+ *
+ * @param raw 原始字符串
+ * @returns 解析成功返回待办数组（可能是空数组）；**JSON 本身损坏返回 null**
+ */
+function tryParseTodos(raw: string): Todo[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return [];
+    return null;
   }
 
   const rawTodos: unknown[] = Array.isArray(parsed)
@@ -152,7 +183,11 @@ function parseTodos(raw: string): Todo[] {
 }
 
 /**
- * 待办排序：未完成在前 → 截止时间升序 → 创建时间升序。
+ * 待办排序：未完成在前 → 有截止时间的按时间升序 → 无截止时间的排在有时间的之后
+ * （组内按创建时间）→ 已完成的永远最后。
+ *
+ * 「无期限」必须显式排到最后而不是靠 `null - now` 参与比较：
+ * `null` 参与算术会变成 0，等于 1970 年，那条待办会跳到最前面冒充「最早到期」。
  *
  * @param todos 待排序数组
  */
@@ -161,9 +196,16 @@ export function sortTodos(todos: readonly Todo[]): Todo[] {
     if (a.done !== b.done) {
       return a.done ? 1 : -1;
     }
-    if (a.deadline !== b.deadline) {
+
+    const aHasDeadline = a.deadline !== null;
+    const bHasDeadline = b.deadline !== null;
+    if (aHasDeadline !== bHasDeadline) {
+      return aHasDeadline ? -1 : 1;
+    }
+    if (a.deadline !== null && b.deadline !== null && a.deadline !== b.deadline) {
       return a.deadline - b.deadline;
     }
+
     if (a.createdAt !== b.createdAt) {
       return a.createdAt - b.createdAt;
     }
@@ -174,13 +216,22 @@ export function sortTodos(todos: readonly Todo[]): Todo[] {
 /**
  * 读取全部待办（含 v1 → v2 迁移）。
  *
+ * **区分「损坏」与「清空」**（这是 P2 的一条真实缺陷修复）：
+ * - v2 的 JSON **解析抛异常** → 说明数据坏了，回落到完好的 v1 备份，
+ *   否则用户一条待办都看不到；再新建一条就会把 v2 覆盖掉，v1 备份从此再也读不回来；
+ * - v2 解析成功但是空数组 → 用户真的把待办删光了，**尊重 v2**，绝不能把 v1 里的老待办复活。
+ *
  * @returns 排好序的待办数组
  * @throws StorageError localStorage 不可用
  */
 export function readTodos(): Todo[] {
   const current = readRaw(STORAGE_KEY);
   if (current !== null && current.trim().length > 0) {
-    return sortTodos(parseTodos(current));
+    const parsed = tryParseTodos(current);
+    if (parsed !== null) {
+      return sortTodos(parsed);
+    }
+    // 走到这里说明 v2 坏了：继续往下尝试 v1，而不是返回空数组
   }
 
   const legacy = readRaw(LEGACY_STORAGE_KEY);
@@ -282,26 +333,36 @@ export const api = {
   /**
    * 新建待办。
    *
-   * @param body 标题 / 内容 / 截止时间 / 重复规则
+   * `deadline` 可以是 `null`（用户选「不设时间」）：这类待办不产生任何提醒，
+   * 因此也不校验「必须晚于现在」，并且重复规则会被强制归零。
+   *
+   * @param body 标题 / 内容 / 截止时间 / 提前提醒开关 / 重复规则
    */
   async createTodo(body: CreateTodoBody): Promise<Todo> {
     const title = normalizeTitle(body.title);
     const content = normalizeContent(body.content ?? '');
-    const repeat = validateRepeat(body.repeat);
+    const deadline = body.deadline ?? null;
 
-    if (!Number.isFinite(body.deadline)) {
-      throw new StorageError('请选择截止时间');
+    if (deadline !== null) {
+      if (!Number.isFinite(deadline)) {
+        throw new StorageError('截止时间不合法');
+      }
+      if (deadline <= Date.now()) {
+        throw new StorageError('截止时间必须晚于现在');
+      }
     }
-    if (body.deadline <= Date.now()) {
-      throw new StorageError('截止时间必须晚于现在');
-    }
+
+    // 没有截止时间就没有时间锚点：重复与提前提醒都无意义，一律归位
+    const repeat = deadline === null ? { kind: 'none' as const } : validateRepeat(body.repeat);
+    const advanceReminder = deadline === null ? true : body.advanceReminder !== false;
 
     const now = Date.now();
     const todo: Todo = {
       id: createId(),
       title,
       content,
-      deadline: body.deadline,
+      deadline,
+      advanceReminder,
       done: false,
       repeat,
       createdAt: now,
@@ -314,8 +375,12 @@ export const api = {
   /**
    * 更新待办。
    *
-   * 关键语义：**完成一个重复任务 = 把 deadline 推进到下一次**，`done` 保持 false。
-   * 只有一次性任务才会真的被标记为完成。
+   * 关键语义：
+   * 1. **完成一个重复任务 = 把 deadline 推进到下一次**，`done` 保持 false；
+   *    只有一次性任务才会真的被标记为完成；
+   * 2. `deadline` 传 `null` = 清除时间，同一事务里把 `repeat` 归零、
+   *    `advanceReminder` 回 `true`（无截止时间时这两个值都没有意义，留着只会造成困惑）；
+   * 3. 从 `null` 改回有值时，`advanceReminder` 保持默认 `true`，除非请求体显式给了 `false`。
    *
    * @param id 待办 id
    * @param body 需要修改的字段
@@ -338,10 +403,16 @@ export const api = {
       patch.content = normalizeContent(body.content);
     }
     if (body.deadline !== undefined) {
-      if (!Number.isFinite(body.deadline)) {
+      if (body.deadline === null) {
+        patch.deadline = null;
+      } else if (!Number.isFinite(body.deadline)) {
         throw new StorageError('截止时间不合法');
+      } else {
+        patch.deadline = body.deadline;
       }
-      patch.deadline = body.deadline;
+    }
+    if (body.advanceReminder !== undefined) {
+      patch.advanceReminder = body.advanceReminder === true;
     }
     if (body.repeat !== undefined) {
       patch.repeat = validateRepeat(body.repeat);
@@ -350,13 +421,20 @@ export const api = {
     const now = Date.now();
     const merged: Todo = { ...current, ...patch };
 
+    // 不变量：没有截止时间 ⇒ 没有重复、没有提前档位
+    if (merged.deadline === null) {
+      merged.repeat = { kind: 'none' };
+      merged.advanceReminder = true;
+    }
+
     let updated: Todo;
     if (body.done === true) {
-      const next = merged.repeat.kind === 'none'
-        ? null
-        : nextOccurrence(merged.deadline, merged.repeat, now);
+      const next =
+        merged.deadline === null || merged.repeat.kind === 'none'
+          ? null
+          : nextOccurrence(merged.deadline, merged.repeat, now);
       if (next === null) {
-        // 一次性任务，或规则损坏：退化成「真的完成」，不把任务卡死
+        // 一次性任务 / 无期限任务，或规则损坏：退化成「真的完成」，不把任务卡死
         updated = { ...merged, done: true, updatedAt: now };
       } else {
         updated = { ...merged, deadline: next, done: false, updatedAt: now };

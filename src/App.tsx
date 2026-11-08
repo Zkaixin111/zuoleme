@@ -4,6 +4,7 @@ import type { RepeatRule, Todo } from '../shared/types';
 import { DetailView } from './components/DetailView';
 import { HealthPanel } from './components/HealthPanel';
 import { HomeView } from './components/HomeView';
+import { type PinnedTodo } from './components/PinnedCard';
 import { TodoEditor } from './components/TodoEditor';
 import { api, sortTodos } from './lib/api';
 import { remainingReminderCount } from './lib/alarms';
@@ -25,7 +26,9 @@ type View = { kind: 'home' } | { kind: 'detail'; id: string } | { kind: 'editor'
 interface EditorInput {
   title: string;
   content: string;
-  deadline: number;
+  /** null = 用户选择「不设时间」 */
+  deadline: number | null;
+  advanceReminder: boolean;
   repeat: RepeatRule;
 }
 
@@ -169,6 +172,7 @@ export default function App(): JSX.Element {
         title: input.title,
         content: input.content,
         deadline: input.deadline,
+        advanceReminder: input.advanceReminder,
         repeat: input.repeat,
       });
       await load();
@@ -188,8 +192,10 @@ export default function App(): JSX.Element {
       try {
         const updated = await api.updateTodo(todo.id, { done: !todo.done });
         await load();
-        if (!todo.done && updated.done === false && updated.repeat.kind !== 'none') {
+        if (!todo.done && updated.done === false && updated.repeat.kind !== 'none' && updated.deadline !== null) {
           setNotice(`已完成这一次，下次 ${formatDeadline(updated.deadline, Date.now())}`);
+        } else if (!todo.done && updated.done === false) {
+          setNotice('已完成这一次');
         } else if (updated.done) {
           setNotice('已标记完成');
         } else {
@@ -224,14 +230,24 @@ export default function App(): JSX.Element {
     [load],
   );
 
-  /** 最近一件未完成的事 */
-  const pinned = useMemo<Todo | null>(() => todos.find((todo) => !todo.done) ?? null, [todos]);
+  /** 最近一件**有截止时间**的未完成的事（无期限的没有倒计时可显示） */
+  const pinned = useMemo<PinnedTodo | null>(() => {
+    const candidate = todos.find((todo) => !todo.done && todo.deadline !== null);
+    return candidate === undefined ? null : { ...candidate, deadline: candidate.deadline as number };
+  }, [todos]);
   const pinnedReminderCount = useMemo<number>(
     () => (pinned ? remainingReminderCount(pinned, now) : 0),
     [pinned, now],
   );
+  /** 未完成且没有截止时间的待办数量（常驻卡空状态提示用） */
+  const undatedCount = useMemo<number>(
+    () => todos.filter((todo) => !todo.done && todo.deadline === null).length,
+    [todos],
+  );
 
   const notificationBlocked = permissions?.supported === true && permissions.notifications === false;
+  /** 磁盘上有旧提醒条解析不出来：提醒已经丢了，必须让用户看见 */
+  const droppedAlarms = permissions?.droppedAlarmCount ?? 0;
 
   const activeTodo = view.kind === 'detail' ? todos.find((todo) => todo.id === view.id) ?? null : null;
   const editingTodo = view.kind === 'editor' && view.id ? todos.find((todo) => todo.id === view.id) ?? null : null;
@@ -239,7 +255,11 @@ export default function App(): JSX.Element {
   return (
     <div className="mx-auto min-h-full w-full max-w-md px-4 pt-5">
       {notificationBlocked ? (
-        <div className="mb-4 rounded-card border border-alert/30 bg-alert/5 px-3 py-3" role="alert" aria-live="assertive">
+        <div
+          className="mb-4 rounded-card border border-alert-line bg-alert-soft px-3 py-3"
+          role="alert"
+          aria-live="assertive"
+        >
           <p className="text-[13px] font-medium text-alert">通知未授权，提醒不会弹出</p>
           <p className="mt-1 text-[11px] leading-relaxed text-soft">
             提醒时间到了也不会显示任何东西。请在系统里允许本应用发送通知。
@@ -259,6 +279,15 @@ export default function App(): JSX.Element {
         </div>
       ) : null}
 
+      {droppedAlarms > 0 ? (
+        <div className="mb-4 rounded-card border border-alert-line bg-alert-soft px-3 py-2" role="status">
+          <p className="text-[13px] font-medium text-alert">有 {droppedAlarms} 条旧提醒未能恢复</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-soft">
+            这些提醒的待办如果还在列表里，打开一次应用就会重新排上；否则请重新创建。
+          </p>
+        </div>
+      ) : null}
+
       {notice ? (
         <div className="mb-4 rounded-card border border-line bg-accent-soft px-3 py-2 text-[11px] leading-relaxed text-accent">
           {notice}
@@ -266,11 +295,13 @@ export default function App(): JSX.Element {
       ) : null}
 
       {error ? (
-        <div className="mb-4 rounded-card bg-alert/5 px-3 py-2 text-[11px] text-alert">{error}</div>
+        <div className="mb-4 rounded-card border border-alert-line bg-alert-soft px-3 py-2 text-[11px] text-alert">
+          {error}
+        </div>
       ) : null}
 
       {alarmError ? (
-        <div className="mb-4 rounded-card border border-alert/30 bg-alert/5 px-3 py-2 text-[11px] leading-relaxed text-alert">
+        <div className="mb-4 rounded-card border border-alert-line bg-alert-soft px-3 py-2 text-[11px] leading-relaxed text-alert">
           提醒设置失败：{alarmError}
           <span className="mt-1 block text-soft">请到下方「运行检查」逐项授权后重试。</span>
         </div>
@@ -306,6 +337,7 @@ export default function App(): JSX.Element {
           now={now}
           pinned={pinned}
           pinnedReminderCount={pinnedReminderCount}
+          undatedCount={undatedCount}
           loading={loading}
           busyId={busyId}
           onCreate={() => setView({ kind: 'editor' })}

@@ -45,6 +45,14 @@ const config: Config = {
         },
         /** 砖红：只用于逾期 */
         alert: '#B4482F',
+        /**
+         * 逾期的浅底与描边。
+         *
+         * 刻意做成两个实色 token，而不是用 `bg-alert/5` 这类半透明叠加：
+         * 半透明在纸色底上会混出不确定的颜色，也和「不用半透明叠加」的设计约束冲突。
+         */
+        'alert-soft': '#FAECE8',
+        'alert-line': '#E8C9C1',
       },
       borderRadius: {
         card: '14px',

@@ -148,6 +148,15 @@ class ReminderAlarmPlugin : Plugin() {
         // 字段语义：true = 仍被系统优化限制（不理想）
         result.put("batteryOptimized", !ignored)
 
+        // 磁盘上有记录但解析不出来 = 提醒已经丢了，必须让界面能显示出来，不能静默
+        val loadResult = try {
+            ReminderStore.loadWithStats(context)
+        } catch (error: Exception) {
+            Log.e(TAG, "读取提醒记录失败（用于统计丢弃条数）", error)
+            null
+        }
+        result.put("droppedAlarmCount", loadResult?.dropped ?: 0)
+
         call.resolve(result)
     }
 

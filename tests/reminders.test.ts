@@ -245,9 +245,16 @@ describe('formatRemaining：倒计时格式化', () => {
     expect(formatRemaining(45 * MINUTE_MS)).toBe('45分钟');
   });
 
-  it('已逾期（负数与 0）', () => {
-    expect(formatRemaining(-1)).toBe('已逾期');
-    expect(formatRemaining(0)).toBe('已逾期');
+  it('刚过点不足 1 分钟 → 刚刚到点（和通知里的口径一致）', () => {
+    expect(formatRemaining(0)).toBe('刚刚到点');
+    expect(formatRemaining(-1)).toBe('刚刚到点');
+    expect(formatRemaining(-59_999)).toBe('刚刚到点');
+  });
+
+  it('已逾期超过 1 分钟 → 已逾期 X（不再只有「已逾期」三个字，用户要知道晚了多久）', () => {
+    expect(formatRemaining(-60_000)).toBe('已逾期 1分钟');
+    expect(formatRemaining(-45 * MINUTE_MS)).toBe('已逾期 45分钟');
+    expect(formatRemaining(-(3 * DAY_MS + 2 * HOUR_MS))).toBe('已逾期 3天2小时');
   });
 
   it('不足 1 分钟 → 不到1分钟', () => {

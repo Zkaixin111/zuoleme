@@ -42,6 +42,7 @@ function makeTodo(id: string, deadline: number, done: boolean = false): Todo {
     id,
     title: `待办 ${id}`,
     content: '',
+    advanceReminder: true,
     deadline,
     done,
     repeat: NO_REPEAT,
@@ -319,6 +320,10 @@ describe('浅色纸感：配色 token 与禁用样式', () => {
       'accent',
       'accent-soft',
       'alert',
+      // 淡色告警底色：刻意用「实色」而不是 alert/5 这种透明度写法，
+      // 因为半透明叠在纸感底色上会随背景漂移，看起来像没对齐的贴纸
+      'alert-soft',
+      'alert-line',
       'transparent',
       'white',
     ]);

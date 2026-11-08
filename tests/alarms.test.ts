@@ -38,6 +38,7 @@ function makeTodo(overrides: Partial<Todo> = {}): Todo {
     id: 'todo-a',
     title: '交周报',
     content: '',
+    advanceReminder: true,
     deadline: NOW + 10 * DAY_MS,
     done: false,
     repeat: NO_REPEAT,
@@ -49,7 +50,8 @@ function makeTodo(overrides: Partial<Todo> = {}): Todo {
 
 describe('compileAlarms', () => {
   it('10 天后截止的待办生成 6 条闹钟（7d/3d/1d/3h/1h/due）', () => {
-    const todo = makeTodo({ deadline: NOW + 10 * DAY_MS, title: '交周报' });
+    const deadline = NOW + 10 * DAY_MS;
+    const todo = makeTodo({ deadline, title: '交周报' });
 
     const alarms = compileAlarms([todo], NOW);
 
@@ -58,18 +60,18 @@ describe('compileAlarms', () => {
 
     // 触发时刻必须等于「截止时间 - 提前量」
     expect(alarms.map((alarm) => alarm.fireAt)).toEqual([
-      todo.deadline - 7 * DAY_MS,
-      todo.deadline - 3 * DAY_MS,
-      todo.deadline - 1 * DAY_MS,
-      todo.deadline - 3 * HOUR_MS,
-      todo.deadline - 1 * HOUR_MS,
-      todo.deadline,
+      deadline - 7 * DAY_MS,
+      deadline - 3 * DAY_MS,
+      deadline - 1 * DAY_MS,
+      deadline - 3 * HOUR_MS,
+      deadline - 1 * HOUR_MS,
+      deadline,
     ]);
 
     // 标题 = 待办标题；每条都带上该实例的 deadline（原生据此现算剩余时间）
     for (const alarm of alarms) {
       expect(alarm.title).toBe('交周报');
-      expect(alarm.deadline).toBe(todo.deadline);
+      expect(alarm.deadline).toBe(deadline);
       expect(alarm.todoId).toBe(todo.id);
     }
   });

@@ -104,6 +104,10 @@ object ReminderNotifier {
      * 这样即使提醒因为关机被补发晚了 20 小时，文案也依然是准确的，
      * 不会出现「还有 3 小时截止」但实际已经逾期的情况。
      *
+     * 负区间规则必须与前端 `shared/format.ts` 的 `formatRemaining` **逐值一致**：
+     * - 逾期不足 1 分钟 →「刚刚到点」
+     * - 否则 →「已逾期 40 分钟」/「已逾期 3天2小时」
+     *
      * @param remainingMs 截止时间减当前时间
      */
     fun remainingText(remainingMs: Long): String {
@@ -112,9 +116,9 @@ object ReminderNotifier {
         }
         val overdue = -remainingMs
         return if (overdue >= MINUTE_MS) {
-            "已逾期${durationText(overdue)}"
+            "已逾期 ${durationText(overdue)}"
         } else {
-            "已到截止时间"
+            "刚刚到点"
         }
     }
 

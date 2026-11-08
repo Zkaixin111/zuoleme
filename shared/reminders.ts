@@ -59,8 +59,17 @@ export function isReminderKind(value: string): value is ReminderKind {
  * - `interval(6h)` → 3h / 1h / due。
  *
  * @param repeat 重复规则
+ * @param advance 是否启用提前档位；false 时只保留「到点」一档（用户主动关掉提前提醒）
  */
-export function reminderOffsetsFor(repeat: RepeatRule): readonly ReminderOffset[] {
+export function reminderOffsetsFor(
+  repeat: RepeatRule,
+  advance: boolean = true,
+): readonly ReminderOffset[] {
+  if (!advance) {
+    // 关掉提前提醒 = 只在到点那一刻提醒一次。这里用过滤而不是新造数组，
+    // 保持返回的元素仍是同一个 REMINDER_OFFSETS 引用（下游按 kind/offsetMs 比较，不依赖顺序来源）。
+    return REMINDER_OFFSETS.filter((item) => item.kind === 'due');
+  }
   const cycle = cycleLengthMs(repeat);
   if (!Number.isFinite(cycle)) {
     return REMINDER_OFFSETS;
@@ -76,17 +85,23 @@ export function reminderOffsetsFor(repeat: RepeatRule): readonly ReminderOffset[
  *
  * `planReminders` 的签名与行为保持不变——一次性任务的旧语义不能被改坏。
  *
- * @param deadline 本次实例的截止时间
+ * @param deadline 本次实例的截止时间；`null` = 不设时间，不产生任何提醒
  * @param repeat 重复规则
  * @param now 当前时间
+ * @param advance 是否启用提前档位，默认 true
  */
-export function planRemindersFor(deadline: number, repeat: RepeatRule, now: number): ReminderPlanItem[] {
-  if (!Number.isFinite(deadline) || !Number.isFinite(now)) {
+export function planRemindersFor(
+  deadline: number | null,
+  repeat: RepeatRule,
+  now: number,
+  advance: boolean = true,
+): ReminderPlanItem[] {
+  if (deadline === null || !Number.isFinite(deadline) || !Number.isFinite(now)) {
     return [];
   }
 
   const plans: ReminderPlanItem[] = [];
-  for (const { kind, offsetMs } of reminderOffsetsFor(repeat)) {
+  for (const { kind, offsetMs } of reminderOffsetsFor(repeat, advance)) {
     const fireAt = deadline - offsetMs;
     if (fireAt > now) {
       plans.push({ kind, fireAt });
@@ -164,10 +179,14 @@ export function reminderTag(todoId: string, kind: ReminderKind): string {
  * 历史上这里是 1 小时，理由是「7d 档的文案是『还有 7 天截止』，迟到 3 小时文案就失真」。
  * 现在通知正文是**触发时刻现算的剩余时间**（见 Kotlin 侧 remainingText），迟到多久文案都准确，
  * 所以窗口放宽到 24 小时：晚上关机、第二天早上开机仍能补上昨晚该响的提醒。
+ *
+ * **注意这两个常量的真实关系**：窗口是 24 小时，但 `REMINDER_MAX_ATTEMPTS = 60`
+ * 会**先于**窗口生效——每分钟一轮、60 次 ≈ 1 小时，所以实际退避上限仍然约 1 小时。
+ * 24 小时只在「每分钟都能重试」的前提下才是上界（例如前 59 轮都没跑满一分钟的极端情况）。
  */
 export const REMINDER_GIVE_UP_MS = 24 * 60 * 60 * 1000;
 
-/** 单条提醒最多尝试次数（每分钟一轮，60 次≈1 小时，与补发窗口对齐） */
+/** 单条提醒最多尝试次数（每分钟一轮，60 次 ≈ 1 小时，会先于 24 小时窗口触发） */
 export const REMINDER_MAX_ATTEMPTS = 60;
 
 /** 一轮扫描后对单条提醒的处置结论 */
@@ -189,8 +208,8 @@ export interface ReminderOutcomeInput {
  *
  * 判定顺序：
  * 1. 本轮有成功推送 → `sent`（标记 sent=1）
- * 2. 已过补发窗口（`now - fireAt >= 1 小时`，等于也算超窗）→ `give_up`
- * 3. 已尝试次数达到上限（`attempts >= 60`）→ `give_up`
+ * 2. 已过补发窗口（`now - fireAt >= REMINDER_GIVE_UP_MS`，当前是 24 小时，等于也算超窗）→ `give_up`
+ * 3. 已尝试次数达到上限（`attempts >= 60`，约 1 小时，**先于** 24 小时窗口生效）→ `give_up`
  * 4. 其余 → `retry`（保留 sent=0，下一轮再试）
  *
  * `sent` 与 `give_up` 都写 sent=1，区别是 `give_up` 必须记 error 日志，避免静默丢提醒。

@@ -203,15 +203,51 @@ describe('E2. 脏数据鲁棒性：只丢坏的那一条', () => {
     expect(readTodos()).toEqual([]);
   });
 
-  it('已知限制（已上报 P2）：v2 解析失败时不会回落到完好的 v1，读到的是空列表', () => {
-    // 现状记录：readTodos 只看「v2 字符串非空」，不区分「v2 损坏」与「用户确实清空了」。
-    // 好处是不会把已删除的待办复活；代价是 v2 一旦损坏，v1 的备份永远不会被再读到。
+  it('v2 损坏（JSON 解析抛异常）→ 回落到完好的 v1，绝不返回空列表（修复后行为）', () => {
+    // 修复前的缺陷：readTodos 只看「v2 字符串非空」，不区分「v2 损坏」与「用户确实清空了」，
+    // 于是 v2 一旦损坏，用户一条待办都看不到，v1 的备份永远不会被再读到。
+    // 修复后：解析抛异常 = 数据坏了 → 回落 v1。
     storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({ version: 1, todos: [v1Record('a')] }));
     storage.setItem(STORAGE_KEY, '{broken');
 
-    expect(readTodos()).toEqual([]);
-    // v1 原文仍然在盘上（没有被删除），这一点是对的
+    const todos = readTodos();
+
+    expect(todos.map((todo) => todo.id)).toEqual(['a']);
+    // v1 原文仍然在盘上（没有被删除），这一点必须保持
     expect(storage.getItem(LEGACY_STORAGE_KEY)).not.toBeNull();
+  });
+
+  it('v2 解析成功但是空数组 → 尊重 v2（用户真的清空了，绝不能把 v1 的老待办复活）', () => {
+    // 这是与上一条**方向相反**的要求，必须同时成立，否则「回落」会变成「删除后自动复活」。
+    storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({ version: 1, todos: [v1Record('a')] }));
+    storage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, todos: [] }));
+
+    expect(readTodos()).toEqual([]);
+  });
+
+  it('v2 合法且有内容 → 只读 v2，v1 里的老待办不会混进来（迁移完成后以 v2 为准）', () => {
+    storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({ version: 1, todos: [v1Record('old')] }));
+    storage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        todos: [
+          {
+            id: 'new',
+            title: '新待办',
+            content: '',
+            deadline: NOW + 3 * DAY_MS,
+            advanceReminder: true,
+            done: false,
+            repeat: { kind: 'none' },
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      }),
+    );
+
+    expect(readTodos().map((todo) => todo.id)).toEqual(['new']);
   });
 });
 

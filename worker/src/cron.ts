@@ -93,7 +93,9 @@ export async function runCron(env: Env, now: number): Promise<CronSummary> {
     if (subs.length === 0) {
       // 没有订阅者：**不再直接标记已发**。
       // 否则「先建待办、之后才开通知」的用户这一档会被静默烧掉，
-      // 现在改为走统一判定：保留待重试，1 小时内开通知还能收到。
+      // 现在改为走统一判定：保留待重试，补齐订阅后仍能收到。
+      // 真实的补发上限是 `REMINDER_MAX_ATTEMPTS = 60`（每分钟一轮 ≈ 1 小时），
+      // 它会**先于** 24 小时的 `REMINDER_GIVE_UP_MS` 生效——所以别对外承诺「24 小时内一定补上」。
       console.warn(
         `[cron] 无订阅者，保留待重试 reminder=${reminder.id} todo=${reminder.todo_id} kind=${reminder.kind} attempts=${reminder.attempts}`,
       );
