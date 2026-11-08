@@ -9,59 +9,53 @@ import {
 } from '../lib/reminder-bridge';
 
 export interface HealthPanelProps {
-  /** 当前已排程的系统闹钟条数（由 App 同步后传入） */
+  /** 当前已排程的系统提醒条数（由 App 同步后传入） */
   scheduledCount: number;
-  /** 面板是否展开（受控：App 在通知未授权时会强制展开它） */
+  /** 因上限被丢弃的条数，> 0 时提示用户 */
+  truncatedCount: number;
+  /** 面板是否展开（受控：App 在通知未授权时会强制展开） */
   open: boolean;
-  /** 切换展开状态 */
   onToggle: () => void;
-  /**
-   * 读到新的授权状态时上报给 App。
-   *
-   * 顶部红色提示条与面板必须共用同一份真相，否则会出现「提示条说没授权、
-   * 面板里三项全绿」这种自相矛盾的界面。
-   */
+  /** 读到新的授权状态时上报给 App（顶部提示条与面板共用一份真相） */
   onPermissionsChanged?: (snapshot: PermissionSnapshot) => void;
 }
 
 /** 单项检查的展示状态 */
 type CheckState = 'ok' | 'warn' | 'unknown';
 
-/** 一行检查项的渲染数据 */
+/** 一行检查项 */
 interface CheckRow {
   key: string;
   title: string;
   state: CheckState;
-  /** 右侧主按钮文案，null 表示不需要按钮 */
   actionLabel: string | null;
   onAction: (() => void) | null;
-  /** 右侧次要按钮文案（用于「拒绝过之后只能去系统设置」的场景） */
   altActionLabel: string | null;
   onAltAction: (() => void) | null;
-  /** 状态说明 */
   detail: string;
 }
 
 /** 状态 → 圆点颜色 */
 function dotClass(state: CheckState): string {
   if (state === 'ok') {
-    return 'bg-brand-400';
+    return 'bg-accent';
   }
   if (state === 'warn') {
-    return 'bg-amber-400';
+    return 'bg-alert';
   }
-  return 'bg-white/30';
+  return 'bg-faint';
 }
 
 /**
  * 运行检查面板。
  *
- * 为什么必须有这个面板：Android 上「闹钟会不会响」不只取决于应用本身，
- * 还取决于三项系统授权（通知、精确闹钟、电池优化）以及国产 ROM 的自启动白名单。
- * 用户看不到这些开关，就只能靠猜；这里逐项显示状态并给一键跳转。
+ * Android 上「提醒会不会弹出来」不只取决于应用本身，还取决于三项系统授权
+ * （通知、准时触发、电池优化）以及国产 ROM 的自启动白名单。用户看不到这些开关，
+ * 就只能靠猜；这里逐项显示状态并给一键跳转。
  */
 export function HealthPanel({
   scheduledCount,
+  truncatedCount,
   open,
   onToggle,
   onPermissionsChanged,
@@ -70,14 +64,12 @@ export function HealthPanel({
   const [busy, setBusy] = useState<boolean>(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  /** 重新读取三项授权状态，并同步给 App */
   const refresh = useCallback(async (): Promise<void> => {
     const snapshot = await readPermissionState();
     setState(snapshot);
     onPermissionsChanged?.(snapshot);
   }, [onPermissionsChanged]);
 
-  // 首次挂载时读一次，之后每次展开面板再刷新
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -88,7 +80,7 @@ export function HealthPanel({
     }
   }, [open, refresh]);
 
-  // 从系统设置页返回时（界面重新可见）再读一次
+  // 从系统设置页返回时再读一次
   useEffect(() => {
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'visible') {
@@ -105,11 +97,7 @@ export function HealthPanel({
     try {
       const granted = await requestNotificationPermission();
       await refresh();
-      setNotice(
-        granted
-          ? '通知权限已允许。'
-          : '仍未允许通知：系统不会再弹授权框，请点右侧「去设置」手动打开。',
-      );
+      setNotice(granted ? '通知权限已允许。' : '仍未允许通知：系统不会再弹授权框，请点「去设置」手动打开。');
     } finally {
       setBusy(false);
     }
@@ -131,7 +119,7 @@ export function HealthPanel({
     setNotice(null);
     try {
       await openExactAlarmSettings();
-      setNotice('已跳转系统设置：请打开「闹钟和提醒」或「允许设置精确闹钟」。授权后返回本页会自动刷新。');
+      setNotice('已跳转系统设置：请允许「准时触发」，否则提醒会被推迟到省电窗口。返回本页会自动刷新。');
     } finally {
       setBusy(false);
     }
@@ -162,19 +150,17 @@ export function HealthPanel({
       onAction: notificationsOk ? null : () => void handleRequestNotifications(),
       altActionLabel: notificationsOk ? null : '去设置',
       onAltAction: notificationsOk ? null : () => void handleOpenNotificationSettings(),
-      detail: notificationsOk ? '已允许：到点会弹出通知' : '未允许：闹钟响了也不会显示任何东西',
+      detail: notificationsOk ? '已允许：到点会弹出提醒' : '未允许：提醒触发了也不会显示任何东西',
     },
     {
       key: 'exact-alarm',
-      title: '精确闹钟（Android 12+）',
+      title: '准时触发（Android 12+）',
       state: state === null ? 'unknown' : exactAlarmOk ? 'ok' : 'warn',
       actionLabel: exactAlarmOk ? null : '去开启',
       onAction: exactAlarmOk ? null : () => void handleOpenExactAlarm(),
       altActionLabel: null,
       onAltAction: null,
-      detail: exactAlarmOk
-        ? '已允许：能在准确的分钟触发'
-        : '未开启：系统会把提醒推迟到省电窗口，可能晚十几分钟',
+      detail: exactAlarmOk ? '已允许：能在准确的分钟触发' : '未开启：系统会把它推迟到省电窗口，可能晚十几分钟',
     },
     {
       key: 'battery',
@@ -189,27 +175,27 @@ export function HealthPanel({
   ];
 
   return (
-    <section className="card mt-4 overflow-hidden">
+    <section className="card mt-6 overflow-hidden">
       <button
         type="button"
         onClick={onToggle}
         className="flex w-full items-center justify-between px-4 py-3 text-left"
         aria-expanded={open}
       >
-        <span className="text-sm font-medium text-ink-300">运行检查</span>
-        <span className="text-xs text-ink-500">{open ? '收起' : '展开'}</span>
+        <span className="text-[13px] font-medium text-ink">运行检查</span>
+        <span className="text-xs text-faint">{open ? '收起' : '展开'}</span>
       </button>
 
       {open ? (
-        <div className="space-y-4 border-t border-white/5 px-4 py-4">
-          <p className="rounded-xl bg-amber-400/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200/90">
+        <div className="space-y-4 border-t border-line px-4 py-4">
+          <p className="rounded-control bg-accent-soft px-3 py-2 text-[11px] leading-relaxed text-accent">
             国产系统（realme / OPPO / vivo / 小米等）还需在系统设置里把本应用的「自启动」打开，
-            并把「耗电管理 / 电池使用」设为「不限制」，否则息屏清后台后提醒会被拦下。
+            并把「耗电管理」设为「不限制」，否则息屏清后台后提醒会被拦下。
           </p>
 
           {!supported ? (
-            <p className="rounded-xl bg-white/5 px-3 py-2 text-[11px] leading-relaxed text-ink-500">
-              当前是浏览器环境，系统闹钟不可用。请安装 APK 后再查看这里的授权状态。
+            <p className="rounded-control bg-paper px-3 py-2 text-[11px] leading-relaxed text-soft">
+              当前是浏览器环境，系统提醒不可用。请安装 APK 后再查看这里的授权状态。
             </p>
           ) : null}
 
@@ -219,14 +205,14 @@ export function HealthPanel({
                 {rows.map((row) => (
                   <li key={row.key} className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="flex items-center gap-2 text-sm font-medium text-white">
+                      <p className="flex items-center gap-2 text-[13px] font-medium text-ink">
                         <span
-                          className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass(row.state)}`}
+                          className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(row.state)}`}
                           aria-hidden="true"
                         />
                         {row.title}
                       </p>
-                      <p className="mt-1 text-[11px] leading-relaxed text-ink-500">{row.detail}</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-faint">{row.detail}</p>
                     </div>
                     {row.actionLabel && row.onAction ? (
                       <span className="flex shrink-0 flex-col items-end gap-1">
@@ -241,7 +227,7 @@ export function HealthPanel({
                         {row.altActionLabel && row.onAltAction ? (
                           <button
                             type="button"
-                            className="rounded-lg px-2 py-1 text-[11px] text-ink-500 underline decoration-white/20 hover:text-white"
+                            className="px-2 py-1 text-[11px] text-faint underline decoration-line-strong"
                             onClick={row.onAltAction}
                             disabled={busy}
                           >
@@ -250,7 +236,7 @@ export function HealthPanel({
                         ) : null}
                       </span>
                     ) : (
-                      <span className="shrink-0 rounded-full bg-brand-500/15 px-2 py-0.5 text-[11px] text-brand-300">
+                      <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] text-accent">
                         正常
                       </span>
                     )}
@@ -258,8 +244,11 @@ export function HealthPanel({
                 ))}
               </ul>
 
-              <div className="flex items-center justify-between border-t border-white/5 pt-3">
-                <p className="text-[11px] text-ink-500">已排程系统闹钟：{scheduledCount} 条</p>
+              <div className="flex items-center justify-between border-t border-line pt-3">
+                <p className="text-[11px] text-faint">
+                  已排程提醒：{scheduledCount} 条
+                  {truncatedCount > 0 ? `（另有 ${truncatedCount} 条超过上限，打开应用后继续续排）` : ''}
+                </p>
                 <button
                   type="button"
                   className="btn-ghost !px-3 !py-2 text-xs"
@@ -273,7 +262,7 @@ export function HealthPanel({
           ) : null}
 
           {notice ? (
-            <p className="rounded-xl bg-brand-500/10 px-3 py-2 text-[11px] leading-relaxed text-brand-300">{notice}</p>
+            <p className="rounded-control bg-accent-soft px-3 py-2 text-[11px] leading-relaxed text-accent">{notice}</p>
           ) : null}
         </div>
       ) : null}

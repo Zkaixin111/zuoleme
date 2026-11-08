@@ -1,8 +1,11 @@
 import type { Config } from 'tailwindcss';
 
 /**
- * Tailwind 3.x 配置（4.x 已移除经典配置方式，故锁 3.x）。
- * content 只扫描真实用到的源码，避免产物无谓膨胀。
+ * Tailwind 3.x 配置。
+ *
+ * 配色是「浅色纸感」：暖纸白底 + 纯白卡面 + 极淡的实线描边，
+ * 层次靠描边与留白做，**不用阴影、不用渐变、不用半透明叠加**。
+ * 圆角刻意收敛（14 / 12 / 10），避免一眼看出是模板生成的「大圆角卡片」。
  */
 const config: Config = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -20,26 +23,33 @@ const config: Config = {
         ],
       },
       colors: {
-        brand: {
-          50: '#eef2ff',
-          100: '#e0e7ff',
-          300: '#a5b4fc',
-          400: '#818cf8',
-          500: '#6366f1',
-          600: '#4f46e5',
-          700: '#4338ca',
+        /** 页面底色：暖纸白，不是纯白 */
+        paper: '#F7F6F2',
+        /** 卡片面 */
+        surface: '#FFFFFF',
+        /** 分隔线 / 卡片描边 + 更强的输入框描边 */
+        line: {
+          DEFAULT: '#E7E4DC',
+          strong: '#D8D3C7',
         },
-        ink: {
-          900: '#0b1020',
-          800: '#111827',
-          700: '#1f2937',
-          500: '#6b7280',
-          300: '#d1d5db',
-          100: '#f3f4f6',
+        /** 主文字：近墨黑 */
+        ink: '#1B1A17',
+        /** 次文字 */
+        soft: '#6F6A60',
+        /** 三级文字 / 标签 */
+        faint: '#A09A8E',
+        /** 墨绿：主按钮、倒计时、选中态 */
+        accent: {
+          DEFAULT: '#2F5D50',
+          soft: '#EAF0ED',
         },
+        /** 砖红：只用于逾期 */
+        alert: '#B4482F',
       },
-      boxShadow: {
-        card: '0 10px 30px -12px rgba(15, 23, 42, 0.25)',
+      borderRadius: {
+        card: '14px',
+        item: '12px',
+        control: '10px',
       },
     },
   },
