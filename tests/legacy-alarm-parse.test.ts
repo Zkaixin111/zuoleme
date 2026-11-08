@@ -404,14 +404,34 @@ describe('P1-2 静态契约：Kotlin 侧的形状不许再改回去', () => {
     expect(STORE).toMatch(/alarm\.legacyBody\?\.let \{ item\.put\("body", it\) \}/);
   });
 
-  it('AlarmReceiver 先取旧正文，再用「旧正文 ?: 现算」决定 body', () => {
-    expect(RECEIVER).toMatch(/val legacyBody = if \(deadline > 0L\) null else ReminderStore\.findLegacyBody\(context, alarmId\)/);
+  it('AlarmReceiver 的 remaining 计算**必须**有 deadline > 0L 守卫（这行 JS 镜像测不出来）', () => {
+    // 为什么这条只能靠源码断言：`receiverBody()` 是我们在本文件里手写的 JS 镜像，
+    // 它「自带」了这个守卫。所以就算有人把 Kotlin 里这行改成 `deadline - now`（不做判空），
+    // 镜像测试依然全绿——而真机上，一条 deadline=0 的旧记录会走现算分支，
+    // 算出 0 - now ≈ -57 年，通知正文变成「已逾期 20757天…」。
+    // 这正是 P1-2 事故的形态：逻辑正确、文本正确、但真的少了一层守卫。
+    expect(RECEIVER).toMatch(
+      /val remaining = if \(deadline > 0L\) deadline - System\.currentTimeMillis\(\) else 0L/,
+    );
+    // 不允许出现「直接相减」的写法（无论出现在哪一行）
+    expect(RECEIVER).not.toMatch(/val remaining = deadline - /);
+  });
+
+  it('AlarmReceiver 先算 remaining，再取旧正文，最后才决定 body（顺序不能反）', () => {
+    expect(RECEIVER).toMatch(
+      /val legacyBody = if \(deadline > 0L\) null else ReminderStore\.findLegacyBody\(context, alarmId\)/,
+    );
     expect(RECEIVER).toMatch(/val body = legacyBody \?\: ReminderNotifier\.remainingText\(remaining\)/);
-    // 顺序不能反：先算 remaining 再用 legacy 覆盖的话，0 - now 已经执行过了
-    const legacyAt = RECEIVER.indexOf('ReminderStore.findLegacyBody');
+
+    // 真比较先后，而不是「都出现过」——后者是假守卫（注释说检查了顺序，实际什么都没查）。
+    // 先取 legacyBody 再算 remaining 是错的：`0 - now` 这时候已经执行过了。
     const remainingAt = RECEIVER.indexOf('val remaining = ');
+    const legacyAt = RECEIVER.indexOf('val legacyBody = ');
+    const bodyAt = RECEIVER.indexOf('val body = legacyBody');
+
     expect(remainingAt).toBeGreaterThan(-1);
-    expect(legacyAt).toBeGreaterThan(-1);
+    expect(legacyAt).toBeGreaterThan(remainingAt);
+    expect(bodyAt).toBeGreaterThan(legacyAt);
   });
 
   it('死掉的旧分支不许回来：不再有「直接 return emptyList() 因为版本不符」的写法', () => {

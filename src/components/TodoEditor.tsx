@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { toDateTimeLocalValue } from '../../shared/format';
 import type { RepeatRule, Todo } from '../../shared/types';
+import { resolveDeadlineDraft } from '../lib/deadline-draft';
 import { RepeatPicker } from './RepeatPicker';
 
 const MINUTE_MS = 60_000;
@@ -57,6 +58,11 @@ function tomorrowAt9(): number {
  *    直接把输入框的值写回去会把 37 秒抹掉 —— 所以用 `deadlineDirty` 记录
  *    「用户是否真的动过时间输入框」，没动过就沿用原始时间戳（含秒）。
  * 2. **不设时间时把无意义的开关藏起来**：没有截止时间就没有重复与提前档位。
+ *
+ * 还有一条规则容易被写错，已抽到 `resolveDeadlineDraft` 里：
+ * **逾期待办只改标题必须能保存**。这条待办的原始时间当然在过去，
+ * 如果无脑校验「必须晚于现在」，用户就再也改不了它的标题了。
+ * 所以只有「新建」或「用户真的动过时间」才做这个校验。
  */
 export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.Element {
   const [title, setTitle] = useState<string>(todo?.title ?? '');
@@ -97,17 +103,24 @@ export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.E
   /**
    * 取最终要提交的截止时间。
    *
-   * @returns 毫秒时间戳；不设时间时为 null，输入无法解析时为 NaN
+   * 判定逻辑在 `resolveDeadlineDraft`（纯函数，可单测）：这里只负责把
+   * 「用户到底动没动过时间」这层 UI 状态喂进去，并把不通过的原因翻译成人话。
+   *
+   * @returns 可以提交时给出时间戳（null = 不设时间），否则给出错误文案
    */
-  const resolveDeadline = (): number | null => {
-    if (!hasDeadline) {
-      return null;
+  const resolveDeadline = (): { deadline: number | null } | { error: string } => {
+    const draft = resolveDeadlineDraft({
+      isNew: todo === null,
+      hasDeadline,
+      dirty: deadlineDirty.current,
+      originalDeadline: originalDeadline.current,
+      inputValue: deadlineValue,
+      now: Date.now(),
+    });
+    if (draft.ok) {
+      return { deadline: draft.deadline };
     }
-    if (!deadlineDirty.current && originalDeadline.current !== null) {
-      return originalDeadline.current;
-    }
-    const parsed = new Date(deadlineValue).getTime();
-    return Number.isFinite(parsed) ? parsed : Number.NaN;
+    return { error: draft.reason === 'past' ? '截止时间必须晚于现在' : '请选择截止时间' };
   };
 
   const handleSubmit = async (): Promise<void> => {
@@ -125,17 +138,13 @@ export function TodoEditor({ todo, onCancel, onSubmit }: TodoEditorProps): JSX.E
       return;
     }
 
-    const deadline = resolveDeadline();
-    if (deadline !== null) {
-      if (!Number.isFinite(deadline)) {
-        setError('请选择截止时间');
-        return;
-      }
-      if (deadline <= Date.now()) {
-        setError('截止时间必须晚于现在');
-        return;
-      }
+    // 逾期待办只改标题时必须能保存：没动过时间就沿用原始时间戳，不做「晚于现在」校验
+    const resolved = resolveDeadline();
+    if ('error' in resolved) {
+      setError(resolved.error);
+      return;
     }
+    const deadline = resolved.deadline;
     if (hasDeadline && repeat.kind === 'weekly' && repeat.weekdays.length === 0) {
       setError('每周重复至少要选一天');
       return;
