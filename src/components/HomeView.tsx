@@ -72,7 +72,9 @@ export function HomeView({
   const groups = groupTodos(pending, now);
 
   return (
-    <div className={selectionMode ? 'pb-32' : 'pb-28'}>
+    // 底部留白要容下「历史任务行 + 主按钮 + 安全区」，否则最后一条待办会被底栏盖住
+    // （底栏实际高度 ≈ 8 + 36 + 6 + 52 + max(12, safe) + 1，这里取 144 + safe，够用且不浪费）
+    <div className="pb-[calc(9rem+env(safe-area-inset-bottom))]">
       <header className="mb-5 flex items-end justify-between px-1">
         <div>
           <p className="text-xs text-faint">{formatTodayHeader(now)}</p>
@@ -152,15 +154,24 @@ export function HomeView({
       {selectionMode ? (
         <SelectionFooter count={selectedIds.size} onDelete={onDeleteSelected} busy={deleting} />
       ) : (
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 mx-auto max-w-md px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        /*
+         * 实底工具条（`bg-paper` + 顶部发丝线）：之前只有 `pointer-events-none` 没有背景，
+         * 列表会从按钮缝隙里透出来，看起来像「浮在内容流里」，不像固定在底部。
+         */
+        <div className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-md border-t border-line bg-paper px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <button
             type="button"
-            className="pointer-events-auto mb-2 flex h-11 w-full items-center justify-center rounded-control border border-line bg-surface text-[13px] text-soft"
+            className="mb-1.5 flex h-9 w-full items-center justify-center text-[13px] text-soft active:opacity-60"
             onClick={onOpenHistory}
           >
-            历史任务 · {doneCount}
+            历史任务 · <span className="ml-1 text-faint">{doneCount}</span>
           </button>
-          <button type="button" className="btn-primary pointer-events-auto w-full" onClick={onCreate}>
+          {/* 主按钮靠尺寸 + 字重 + 深绿实底取得重量，不用阴影/渐变 */}
+          <button
+            type="button"
+            className="btn-primary h-[52px] w-full rounded-[12px] text-[15px] font-semibold"
+            onClick={onCreate}
+          >
             新建待办
           </button>
         </div>

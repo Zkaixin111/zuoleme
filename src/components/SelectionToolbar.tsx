@@ -47,13 +47,16 @@ export function SelectionHeader({
 
 /**
  * 底部删除操作栏（贴底，带安全区）。
+ *
+ * 与主页的底部工具条用**同一套外壳**（`bg-paper` 实底 + 顶部发丝线 + `px-3`），
+ * 否则两种模式下的底栏一换就「一个透、一个不透」，看起来像两个不同的应用。
  */
 export function SelectionFooter({ count, onDelete, busy = false }: Pick<SelectionToolbarProps, 'count' | 'onDelete' | 'busy'>): JSX.Element {
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 mx-auto max-w-md px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+    <div className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-md border-t border-line bg-paper px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       <button
         type="button"
-        className="btn pointer-events-auto w-full bg-alert text-white disabled:opacity-40"
+        className="btn w-full bg-alert text-white disabled:opacity-40"
         onClick={onDelete}
         disabled={count === 0 || busy}
       >

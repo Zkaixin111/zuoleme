@@ -70,7 +70,9 @@ describe('HomeView 的过滤（源码守卫）', () => {
   });
 
   it('历史入口显示已完成数量', () => {
-    expect(home).toContain('历史任务 · {doneCount}');
+    // 数字改成了 span（用 text-faint 弱化），所以只断言「文案 + 数字变量」都在
+    expect(home).toContain('历史任务 ·');
+    expect(home).toContain('{doneCount}');
   });
 });
 

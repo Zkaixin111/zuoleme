@@ -367,29 +367,31 @@ export function TodoEditor({
         </p>
       ) : null}
 
-      {/* 次要操作区：视觉上不是主按钮，但都不可逆，点击后都要二次确认 */}
+      {/* 次要操作区：两个等宽描边按钮（绿=完成、红=删除），都不可逆，点击后都要二次确认 */}
       {todo ? (
-        <div className="mt-6 flex items-center justify-between border-t border-line pt-3">
-          {todo.done ? (
-            <span className="text-[11px] text-faint">这件事已完成</span>
-          ) : (
+        <div className="mt-5 border-t border-line pt-3">
+          <div className="flex gap-2">
+            {todo.done ? (
+              <p className="flex h-11 flex-1 items-center justify-center text-[14px] text-faint">这件事已完成</p>
+            ) : (
+              <button
+                type="button"
+                className="flex h-11 flex-1 items-center justify-center rounded-[10px] border border-accent bg-transparent text-[14px] font-medium text-accent active:bg-accent-soft disabled:opacity-40"
+                disabled={busy || secondaryBusy}
+                onClick={() => (onDone ? void runSecondary(() => onDone(todo)) : undefined)}
+              >
+                {todo.repeat.kind === 'none' ? '标记完成' : '完成这一次'}
+              </button>
+            )}
             <button
               type="button"
-              className="text-[13px] text-accent disabled:opacity-40"
+              className="flex h-11 flex-1 items-center justify-center rounded-[10px] border border-alert bg-transparent text-[14px] font-medium text-alert active:bg-alert-soft disabled:opacity-40"
               disabled={busy || secondaryBusy}
-              onClick={() => (onDone ? void runSecondary(() => onDone(todo)) : undefined)}
+              onClick={() => (onDelete ? void runSecondary(() => onDelete(todo)) : undefined)}
             >
-              {todo.repeat.kind === 'none' ? '标记完成' : '完成这一次'}
+              删除这件事
             </button>
-          )}
-          <button
-            type="button"
-            className="text-[13px] text-alert disabled:opacity-40"
-            disabled={busy || secondaryBusy}
-            onClick={() => (onDelete ? void runSecondary(() => onDelete(todo)) : undefined)}
-          >
-            删除这件事
-          </button>
+          </div>
         </div>
       ) : null}
 
