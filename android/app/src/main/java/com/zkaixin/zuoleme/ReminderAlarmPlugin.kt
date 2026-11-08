@@ -74,9 +74,11 @@ class ReminderAlarmPlugin : Plugin() {
 
         try {
             ReminderNotifier.ensureChannel(context)
-            ReminderStore.scheduleAll(context, records)
+            // 回报「真正排上的条数」而不是入参条数：原生会过滤掉已过去的时刻、
+            // 排程失败也不会计入，这样界面上「已排程 N 条」才是真的
+            val scheduled = ReminderStore.scheduleAll(context, records)
             val result = JSObject()
-            result.put("scheduled", records.size)
+            result.put("scheduled", scheduled)
             call.resolve(result)
         } catch (error: Exception) {
             Log.e(TAG, "scheduleAll 失败", error)
@@ -188,6 +190,31 @@ class ReminderAlarmPlugin : Plugin() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         if (!startIntent(intent)) {
+            startIntent(appDetailsIntent())
+        }
+        call.resolve()
+    }
+
+    /**
+     * 跳转「本应用的通知设置页」。
+     *
+     * 用户拒绝过一次通知权限后，系统不再弹框（`requestPermissionForAlias` 直接返回 denied），
+     * 这时唯一能打开开关的地方就是这里，所以它不是一个可有可无的入口。
+     *
+     * JS 调用：`ReminderAlarm.openNotificationSettings()`
+     */
+    @PluginMethod
+    fun openNotificationSettings(call: PluginCall) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (!startIntent(intent)) {
+                startIntent(appDetailsIntent())
+            }
+        } else {
+            // Android 8 以下没有按应用的通知设置页，退回到应用详情页
             startIntent(appDetailsIntent())
         }
         call.resolve()

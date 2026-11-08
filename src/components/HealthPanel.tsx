@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   openBatterySettings,
   openExactAlarmSettings,
+  openNotificationSettings,
   readPermissionState,
   requestNotificationPermission,
   type PermissionSnapshot,
@@ -10,6 +11,17 @@ import {
 export interface HealthPanelProps {
   /** 当前已排程的系统闹钟条数（由 App 同步后传入） */
   scheduledCount: number;
+  /** 面板是否展开（受控：App 在通知未授权时会强制展开它） */
+  open: boolean;
+  /** 切换展开状态 */
+  onToggle: () => void;
+  /**
+   * 读到新的授权状态时上报给 App。
+   *
+   * 顶部红色提示条与面板必须共用同一份真相，否则会出现「提示条说没授权、
+   * 面板里三项全绿」这种自相矛盾的界面。
+   */
+  onPermissionsChanged?: (snapshot: PermissionSnapshot) => void;
 }
 
 /** 单项检查的展示状态 */
@@ -20,9 +32,12 @@ interface CheckRow {
   key: string;
   title: string;
   state: CheckState;
-  /** 右侧按钮文案，null 表示不需要按钮 */
+  /** 右侧主按钮文案，null 表示不需要按钮 */
   actionLabel: string | null;
   onAction: (() => void) | null;
+  /** 右侧次要按钮文案（用于「拒绝过之后只能去系统设置」的场景） */
+  altActionLabel: string | null;
+  onAltAction: (() => void) | null;
   /** 状态说明 */
   detail: string;
 }
@@ -45,17 +60,22 @@ function dotClass(state: CheckState): string {
  * 还取决于三项系统授权（通知、精确闹钟、电池优化）以及国产 ROM 的自启动白名单。
  * 用户看不到这些开关，就只能靠猜；这里逐项显示状态并给一键跳转。
  */
-export function HealthPanel({ scheduledCount }: HealthPanelProps): JSX.Element {
-  const [open, setOpen] = useState<boolean>(false);
+export function HealthPanel({
+  scheduledCount,
+  open,
+  onToggle,
+  onPermissionsChanged,
+}: HealthPanelProps): JSX.Element {
   const [state, setState] = useState<PermissionSnapshot | null>(null);
   const [busy, setBusy] = useState<boolean>(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  /** 重新读取三项授权状态 */
+  /** 重新读取三项授权状态，并同步给 App */
   const refresh = useCallback(async (): Promise<void> => {
     const snapshot = await readPermissionState();
     setState(snapshot);
-  }, []);
+    onPermissionsChanged?.(snapshot);
+  }, [onPermissionsChanged]);
 
   // 首次挂载时读一次，之后每次展开面板再刷新
   useEffect(() => {
@@ -85,7 +105,22 @@ export function HealthPanel({ scheduledCount }: HealthPanelProps): JSX.Element {
     try {
       const granted = await requestNotificationPermission();
       await refresh();
-      setNotice(granted ? '通知权限已允许。' : '仍未允许通知：请到系统设置 → 应用 → 做了么 → 通知 里手动打开。');
+      setNotice(
+        granted
+          ? '通知权限已允许。'
+          : '仍未允许通知：系统不会再弹授权框，请点右侧「去设置」手动打开。',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleOpenNotificationSettings = async (): Promise<void> => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await openNotificationSettings();
+      setNotice('已跳转通知设置：请打开「允许通知」。返回本页会自动刷新。');
     } finally {
       setBusy(false);
     }
@@ -125,6 +160,8 @@ export function HealthPanel({ scheduledCount }: HealthPanelProps): JSX.Element {
       state: state === null ? 'unknown' : notificationsOk ? 'ok' : 'warn',
       actionLabel: notificationsOk ? null : '去授权',
       onAction: notificationsOk ? null : () => void handleRequestNotifications(),
+      altActionLabel: notificationsOk ? null : '去设置',
+      onAltAction: notificationsOk ? null : () => void handleOpenNotificationSettings(),
       detail: notificationsOk ? '已允许：到点会弹出通知' : '未允许：闹钟响了也不会显示任何东西',
     },
     {
@@ -133,6 +170,8 @@ export function HealthPanel({ scheduledCount }: HealthPanelProps): JSX.Element {
       state: state === null ? 'unknown' : exactAlarmOk ? 'ok' : 'warn',
       actionLabel: exactAlarmOk ? null : '去开启',
       onAction: exactAlarmOk ? null : () => void handleOpenExactAlarm(),
+      altActionLabel: null,
+      onAltAction: null,
       detail: exactAlarmOk
         ? '已允许：能在准确的分钟触发'
         : '未开启：系统会把提醒推迟到省电窗口，可能晚十几分钟',
@@ -143,6 +182,8 @@ export function HealthPanel({ scheduledCount }: HealthPanelProps): JSX.Element {
       state: state === null ? 'unknown' : batteryOk ? 'ok' : 'warn',
       actionLabel: batteryOk ? null : '去设置',
       onAction: batteryOk ? null : () => void handleOpenBattery(),
+      altActionLabel: null,
+      onAltAction: null,
       detail: batteryOk ? '已忽略电池优化：后台不会被清理' : '仍受限制：长时间未使用可能收不到提醒',
     },
   ];
@@ -151,7 +192,7 @@ export function HealthPanel({ scheduledCount }: HealthPanelProps): JSX.Element {
     <section className="card mt-4 overflow-hidden">
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={onToggle}
         className="flex w-full items-center justify-between px-4 py-3 text-left"
         aria-expanded={open}
       >
@@ -188,14 +229,26 @@ export function HealthPanel({ scheduledCount }: HealthPanelProps): JSX.Element {
                       <p className="mt-1 text-[11px] leading-relaxed text-ink-500">{row.detail}</p>
                     </div>
                     {row.actionLabel && row.onAction ? (
-                      <button
-                        type="button"
-                        className="btn-ghost shrink-0 !px-3 !py-2 text-xs"
-                        onClick={row.onAction}
-                        disabled={busy}
-                      >
-                        {row.actionLabel}
-                      </button>
+                      <span className="flex shrink-0 flex-col items-end gap-1">
+                        <button
+                          type="button"
+                          className="btn-ghost !px-3 !py-2 text-xs"
+                          onClick={row.onAction}
+                          disabled={busy}
+                        >
+                          {row.actionLabel}
+                        </button>
+                        {row.altActionLabel && row.onAltAction ? (
+                          <button
+                            type="button"
+                            className="rounded-lg px-2 py-1 text-[11px] text-ink-500 underline decoration-white/20 hover:text-white"
+                            onClick={row.onAltAction}
+                            disabled={busy}
+                          >
+                            {row.altActionLabel}
+                          </button>
+                        ) : null}
+                      </span>
                     ) : (
                       <span className="shrink-0 rounded-full bg-brand-500/15 px-2 py-0.5 text-[11px] text-brand-300">
                         正常

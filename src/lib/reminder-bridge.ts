@@ -40,8 +40,13 @@ export interface NativeAlarm {
 
 /** 自研原生插件的方法签名 */
 interface ReminderAlarmPlugin {
-  /** 全量替换：存盘 + 取消旧闹钟 + 逐条 setExactAndAllowWhileIdle */
-  scheduleAll(options: { alarms: NativeAlarm[] }): Promise<void>;
+  /**
+   * 全量替换：存盘 + 取消旧闹钟 + 逐条 setExactAndAllowWhileIdle。
+   *
+   * 原生会返回 `{ scheduled }` —— 真正排上的条数（已过滤过去时刻、已扣除失败），
+   * 而不是我们传进去的条数。
+   */
+  scheduleAll(options: { alarms: NativeAlarm[] }): Promise<{ scheduled?: number } | void>;
   /** 取消全部闹钟并清空持久化记录 */
   cancelAll(): Promise<void>;
   /** 读取三项系统授权状态 */
@@ -52,6 +57,8 @@ interface ReminderAlarmPlugin {
   openExactAlarmSettings(): Promise<void>;
   /** 跳转「电池优化」系统设置页 */
   openBatterySettings(): Promise<void>;
+  /** 跳转本应用的通知设置页（拒绝过权限后只能从这里手动打开） */
+  openNotificationSettings(): Promise<void>;
 }
 
 /** 插件代理对象；在 Web 上调用会抛「未实现」，因此所有调用都先判平台 */
@@ -109,8 +116,11 @@ export async function syncAlarms(todos: readonly Todo[], now: number = Date.now(
   }));
 
   try {
-    await ReminderAlarm.scheduleAll({ alarms: payload });
-    return { ok: true, scheduled: payload.length, error: null };
+    const result = await ReminderAlarm.scheduleAll({ alarms: payload });
+    // 优先用原生回报的条数：原生会过滤已过去的时刻、排程失败也不计入，
+    // 比 payload.length 更接近「系统里真实排上的闹钟数」
+    const reported = result && typeof result.scheduled === 'number' ? result.scheduled : payload.length;
+    return { ok: true, scheduled: reported, error: null };
   } catch (error) {
     return {
       ok: false,
@@ -192,5 +202,22 @@ export async function openBatterySettings(): Promise<void> {
     await ReminderAlarm.openBatterySettings();
   } catch {
     // 忽略
+  }
+}
+
+/**
+ * 跳转本应用的通知设置页。
+ *
+ * 场景：用户在授权框里点了「不允许」后，Android 不会再弹授权框，
+ * 此时只能引导他去系统里手动打开。
+ */
+export async function openNotificationSettings(): Promise<void> {
+  if (!isNativePlatform()) {
+    return;
+  }
+  try {
+    await ReminderAlarm.openNotificationSettings();
+  } catch {
+    // 部分 ROM 没有该页面，忽略
   }
 }

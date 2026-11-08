@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { earliestFireAt, planReminders } from '../shared/reminders';
 import type { Todo } from '../shared/types';
 import { AddTodoPanel } from './components/AddTodoPanel';
@@ -6,7 +6,14 @@ import { HealthPanel } from './components/HealthPanel';
 import { PinnedCard } from './components/PinnedCard';
 import { TodoList } from './components/TodoList';
 import { api, sortTodos } from './lib/api';
-import { isNativePlatform, syncAlarms } from './lib/reminder-bridge';
+import {
+  isNativePlatform,
+  openNotificationSettings,
+  readPermissionState,
+  requestNotificationPermission,
+  syncAlarms,
+  type PermissionSnapshot,
+} from './lib/reminder-bridge';
 import { useNow } from './lib/useNow';
 
 /**
@@ -18,6 +25,10 @@ import { useNow } from './lib/useNow';
  *
  * 任何一次数据变化（新建 / 完成 / 删除）都会**全量重排**系统闹钟，
  * 这样不存在「删了待办但闹钟还在」的残留问题。
+ *
+ * 通知权限是这个应用的生命线：没有通知权限，闹钟照样触发但系统会把通知丢掉，
+ * 用户看到的就是「什么都没发生」。所以首次冷启动会主动申请一次，
+ * 被拒后立刻用红色提示条 + 自动展开的运行检查面板把问题摆到用户眼前。
  */
 export default function App(): JSX.Element {
   const [todos, setTodos] = useState<Todo[]>([]);
@@ -27,6 +38,10 @@ export default function App(): JSX.Element {
   const [scheduledCount, setScheduledCount] = useState<number>(0);
   const [addOpen, setAddOpen] = useState<boolean>(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
+  const [checkOpen, setCheckOpen] = useState<boolean>(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const permissionAsked = useRef<boolean>(false);
   const now = useNow(1000);
 
   /**
@@ -55,21 +70,72 @@ export default function App(): JSX.Element {
     }
   }, [applyTodos]);
 
-  // 首次进入：读本机数据 + 排钟
-  useEffect(() => {
-    void load();
-  }, [load]);
+  /** 重读三项系统授权状态（浏览器环境下 supported=false，永远不会误报） */
+  const refreshPermissions = useCallback(async (): Promise<PermissionSnapshot> => {
+    const snapshot = await readPermissionState();
+    setPermissions(snapshot);
+    return snapshot;
+  }, []);
 
-  // 回到前台时重新读一次并重排：用户可能刚在系统设置里授权，或改过系统时间
+  // 首次进入：读本机数据 → 排钟 → 缺通知权限就主动申请一次（每次冷启动最多一次）
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      await load();
+      if (cancelled || permissionAsked.current || !isNativePlatform()) {
+        return;
+      }
+      const snapshot = await refreshPermissions();
+      if (cancelled || !snapshot.supported || snapshot.notifications) {
+        return;
+      }
+
+      permissionAsked.current = true;
+      await requestNotificationPermission();
+      if (cancelled) {
+        return;
+      }
+      const after = await refreshPermissions();
+      if (!after.notifications) {
+        // 被拒：把问题摆到明面上，而不是让用户等到「到点没有提醒」才发现
+        setCheckOpen(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [load, refreshPermissions]);
+
+  // 回到前台时重新读一次：用户可能刚在系统设置里授权，或改过系统时间
   useEffect(() => {
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'visible') {
         void load();
+        void refreshPermissions();
       }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
-  }, [load]);
+  }, [load, refreshPermissions]);
+
+  /** 顶部提示条上的「去允许」 */
+  const handleAllowNotifications = useCallback(async (): Promise<void> => {
+    setNotice(null);
+    await requestNotificationPermission();
+    const snapshot = await refreshPermissions();
+    if (snapshot.notifications) {
+      setNotice('通知权限已允许，六档提醒会正常弹出。');
+    } else {
+      setCheckOpen(true);
+      setNotice('仍未允许通知：系统不会再弹授权框，请点「去系统设置」手动打开。');
+    }
+  }, [refreshPermissions]);
+
+  /** 顶部提示条上的「去系统设置」 */
+  const handleOpenNotificationSettings = useCallback(async (): Promise<void> => {
+    await openNotificationSettings();
+  }, []);
 
   /** 新建 */
   const handleCreate = async (input: { title: string; deadline: number }): Promise<void> => {
@@ -124,6 +190,8 @@ export default function App(): JSX.Element {
   }, [pinned, now]);
 
   const native = isNativePlatform();
+  // 只在「原生环境 + 明确读到了状态 + 确实没授权」时报警，浏览器环境不会误报
+  const notificationBlocked = permissions?.supported === true && permissions.notifications === false;
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-md flex-col px-4 pb-24 pt-6">
@@ -136,6 +204,43 @@ export default function App(): JSX.Element {
           {native ? '本机版' : '浏览器'}
         </span>
       </header>
+
+      {notificationBlocked ? (
+        <div
+          className="mb-4 rounded-xl bg-red-500/15 px-3 py-3 ring-1 ring-red-500/40"
+          role="alert"
+          aria-live="assertive"
+        >
+          <p className="flex items-center gap-2 text-sm font-semibold text-red-200">
+            <span aria-hidden="true">⚠</span> 通知未授权，六档提醒不会响
+          </p>
+          <p className="mt-1 text-[11px] leading-relaxed text-red-200/70">
+            系统闹钟会按时触发，但没有通知权限时通知会被直接丢弃 —— 你什么都看不到。
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              className="btn-primary flex-1 !py-2 text-xs"
+              onClick={() => void handleAllowNotifications()}
+            >
+              去允许
+            </button>
+            <button
+              type="button"
+              className="btn-ghost flex-1 !py-2 text-xs"
+              onClick={() => void handleOpenNotificationSettings()}
+            >
+              去系统设置
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {notice ? (
+        <div className="mb-4 rounded-xl bg-brand-500/10 px-3 py-2 text-xs leading-relaxed text-brand-300">
+          {notice}
+        </div>
+      ) : null}
 
       {error ? (
         <div className="mb-4 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div>
@@ -168,7 +273,12 @@ export default function App(): JSX.Element {
         />
       </div>
 
-      <HealthPanel scheduledCount={scheduledCount} />
+      <HealthPanel
+        scheduledCount={scheduledCount}
+        open={checkOpen}
+        onToggle={() => setCheckOpen((value) => !value)}
+        onPermissionsChanged={setPermissions}
+      />
 
       <p className="mt-6 px-1 text-center text-[11px] leading-relaxed text-ink-500">
         提醒由手机系统闹钟在到点时直接弹出：不联网、不经过服务器，关机重启后也会自动重建。
