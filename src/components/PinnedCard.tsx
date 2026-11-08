@@ -9,6 +9,8 @@ export interface PinnedCardProps {
   todo: Todo | null;
   /** 当前时间（由 useNow 每秒推进） */
   now: number;
+  /** 最近一条待发提醒的时间戳（由 planReminders 现算，null 表示没有后续提醒） */
+  nextFireAt: number | null;
   /** 正在提交的待办 id，用于禁用按钮 */
   busy: boolean;
   /** 标记完成 */
@@ -20,7 +22,7 @@ export interface PinnedCardProps {
 /**
  * 顶部常驻卡片：产品核心视图，始终显示「最近一件事」+ 倒计时。
  */
-export function PinnedCard({ todo, now, busy, onDone, onCreate }: PinnedCardProps): JSX.Element {
+export function PinnedCard({ todo, now, nextFireAt, busy, onDone, onCreate }: PinnedCardProps): JSX.Element {
   if (!todo) {
     return (
       <section className="card p-5" aria-label="最近一件事">
@@ -37,7 +39,7 @@ export function PinnedCard({ todo, now, busy, onDone, onCreate }: PinnedCardProp
   const urgent = remaining <= URGENT_THRESHOLD_MS;
   const overdue = remaining <= 0;
   const nextFireText =
-    todo.nextFireAt !== null && todo.nextFireAt > now ? formatRemaining(todo.nextFireAt - now) : null;
+    nextFireAt !== null && nextFireAt > now ? formatRemaining(nextFireAt - now) : null;
 
   return (
     <section

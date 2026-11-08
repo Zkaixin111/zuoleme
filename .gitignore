@@ -25,3 +25,6 @@ Thumbs.db
 *.log
 npm-debug.log*
 coverage/
+
+# Cloudflare 凭据（仅本地，勿提交）
+.env.cloudflare

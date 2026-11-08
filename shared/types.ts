@@ -13,7 +13,14 @@ export interface ReminderPlanItem {
   fireAt: number;
 }
 
-/** 接口返回的待办（已做字段 camelCase 映射） */
+/**
+ * 待办实体（前端本地 APK 版本的唯一数据模型）。
+ *
+ * 刻意保持最小：没有分类、优先级、备注等字段。
+ * 「最近一条待发提醒时间」（nextFireAt）不是持久化字段，
+ * 而是每次由 `planReminders(deadline, now)` 现算出来的派生值，
+ * 因为本地方案里闹钟的真实排期在 Android AlarmManager 上，不在这里。
+ */
 export interface Todo {
   id: string;
   title: string;
@@ -22,6 +29,13 @@ export interface Todo {
   done: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * Worker（已停用，仅保留代码）返回的待办：比本地模型多一个计算字段。
+ * APK 版本不引用 worker/，保留它只为将来可能做同步。
+ */
+export interface TodoWithNextFire extends Todo {
   /** 最近一条未发送提醒的时间；无待发提醒时为 null */
   nextFireAt: number | null;
 }

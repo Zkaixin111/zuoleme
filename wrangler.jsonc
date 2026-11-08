@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "zuoleme-db",
-      "database_id": "REPLACE_ME_WITH_YOUR_D1_DATABASE_ID",
+      "database_id": "49fbfd58-389d-4069-93da-3f29f66e2a2c",
       "migrations_dir": "worker/migrations"
     }
   ],

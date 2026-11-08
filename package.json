@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "做了么 - 待办 + 六档到期提醒 + 常驻最近事项的 PWA",
+  "description": "做了么 - 待办 + 六档到期提醒 + 常驻最近事项的 Android 本地应用（Capacitor）",
   "scripts": {
     "dev": "vite",
     "dev:worker": "wrangler dev",
@@ -18,10 +18,13 @@
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
+    "@capacitor/android": "^6.2.3",
+    "@capacitor/core": "^6.2.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^6.2.3",
     "@cloudflare/workers-types": "^5.0.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",

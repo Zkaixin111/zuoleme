@@ -1,4 +1,4 @@
-import type { CreateTodoBody, Todo, TodoRow, UpdateTodoBody } from '../../shared/types';
+import type { CreateTodoBody, TodoRow, TodoWithNextFire, UpdateTodoBody } from '../../shared/types';
 import {
   deleteSubByEndpoint,
   deleteTodoCascade,
@@ -49,7 +49,7 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 /** D1 行 → 接口返回结构 */
-function toTodo(row: TodoRow): Todo {
+function toTodo(row: TodoRow): TodoWithNextFire {
   return {
     id: row.id,
     title: row.title,
