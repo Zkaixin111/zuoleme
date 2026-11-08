@@ -1,20 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { DAY_MS } from '../shared/reminders';
+import { DAY_MS, HOUR_MS } from '../shared/reminders';
 import type { ReminderKind, Todo } from '../shared/types';
+import { NO_REPEAT } from '../shared/types';
 import { ALARM_ID_MAX, alarmId, compileAlarms, hashAlarmKey } from '../src/lib/alarms';
 
 /**
  * 闹钟 id 的碰撞与唯一性专项测试。
  *
  * 为什么单独立一个文件：Android 把闹钟 id 同时当作**通知 id** 和
- * **PendingIntent requestCode**。两个不同的 (待办, 档位) 落到同一个 id 上时，
+ * **PendingIntent requestCode**。两个不同的 (待办, 档位, 触发时刻) 落到同一个 id 上时，
  * 后一条通知会覆盖前一条、后一个 PendingIntent 会替换前一个 ——
  * 用户看到的现象是「少响了一次」，而这正是本产品最核心的诉求。
  * 这类失败**不会抛异常、不会写日志**，只能靠测试证明。
  *
  * 覆盖三层：
  * 1. `hashAlarmKey` 自身的取值范围与稳定性；
- * 2. 真实规模下（上百个待办 × 六档）id 全局唯一；
+ * 2. 真实规模下（上百个待办 × 六档，以及重复任务展开后）id 全局唯一；
  * 3. 已知哈希碰撞对上，`compileAlarms` 的线性探测是否真的救了回来。
  */
 
@@ -22,6 +23,19 @@ const NOW = Date.UTC(2026, 0, 1, 0, 0, 0);
 
 /** 六档 kind，顺序与 shared/reminders.ts 一致 */
 const KINDS: readonly ReminderKind[] = ['7d', '3d', '1d', '3h', '1h', 'due'];
+
+/** 一条待办铺开 6 档所需的默认截止时间（10 天后，六档全部落在未来） */
+const DEADLINE = NOW + 10 * DAY_MS;
+
+/** 六档的提前量，与 shared/reminders.ts 的 REMINDER_OFFSETS 对应 */
+const OFFSETS: Readonly<Record<ReminderKind, number>> = {
+  '7d': 7 * DAY_MS,
+  '3d': 3 * DAY_MS,
+  '1d': 1 * DAY_MS,
+  '3h': 3 * HOUR_MS,
+  '1h': HOUR_MS,
+  due: 0,
+};
 
 /**
  * 构造一条待办。
@@ -33,8 +47,10 @@ function makeTodo(id: string, overrides: Partial<Todo> = {}): Todo {
   return {
     id,
     title: `待办 ${id}`,
-    deadline: NOW + 30 * DAY_MS,
+    content: '',
+    deadline: DEADLINE,
     done: false,
+    repeat: NO_REPEAT,
     createdAt: NOW - DAY_MS,
     updatedAt: NOW - DAY_MS,
     ...overrides,
@@ -72,7 +88,7 @@ describe('hashAlarmKey 的取值范围', () => {
       '',
       'a',
       'zuoleme.alarm::',
-      'zuoleme.alarm:x:7d',
+      'zuoleme.alarm:x:7d:0',
       '做了么',
       'x'.repeat(500),
       '\u0000\u0001',
@@ -87,22 +103,22 @@ describe('hashAlarmKey 的取值范围', () => {
   });
 
   it('同一键 1000 次结果完全一致（排程幂等的前提）', () => {
-    const first = hashAlarmKey('zuoleme.alarm:fixed:due');
+    const first = hashAlarmKey('zuoleme.alarm:fixed:due:1767225600000');
     for (let index = 0; index < 1000; index += 1) {
-      expect(hashAlarmKey('zuoleme.alarm:fixed:due')).toBe(first);
+      expect(hashAlarmKey('zuoleme.alarm:fixed:due:1767225600000')).toBe(first);
     }
   });
 });
 
 describe('真实规模下的 id 全局唯一性', () => {
-  it('100 个待办 × 6 档 = 600 个 (todoId, kind) 组合，id 两两不同', () => {
+  it('100 个待办 × 6 档 = 600 个组合，id 两两不同', () => {
     const keys: string[] = [];
     const ids: number[] = [];
     for (let index = 0; index < 100; index += 1) {
       const todoId = uuidLike(index);
       for (const kind of KINDS) {
         keys.push(`${todoId}:${kind}`);
-        ids.push(alarmId(todoId, kind));
+        ids.push(alarmId(todoId, kind, DEADLINE - OFFSETS[kind]));
       }
     }
 
@@ -117,7 +133,7 @@ describe('真实规模下的 id 全局唯一性', () => {
     for (let index = 0; index < 300; index += 1) {
       const todoId = uuidLike(index);
       for (const kind of KINDS) {
-        ids.push(alarmId(todoId, kind));
+        ids.push(alarmId(todoId, kind, DEADLINE - OFFSETS[kind]));
       }
     }
 
@@ -128,38 +144,50 @@ describe('真实规模下的 id 全局唯一性', () => {
 
   it('同一待办的六档 id 严格互不相同（档位不会互相覆盖）', () => {
     const todoId = uuidLike(7);
-    const ids = KINDS.map((kind) => alarmId(todoId, kind));
+    const ids = KINDS.map((kind) => alarmId(todoId, kind, DEADLINE - OFFSETS[kind]));
 
     expect(new Set(ids).size).toBe(KINDS.length);
     expectValidIds(ids);
   });
 
   it('不同待办的同一档位 id 互不相同', () => {
-    const ids = Array.from({ length: 200 }, (_, index) => alarmId(uuidLike(index), 'due'));
+    const ids = Array.from({ length: 200 }, (_, index) =>
+      alarmId(uuidLike(index), 'due', DEADLINE)
+    );
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('同一待办同一档位、不同实例（重复任务）的 id 互不相同', () => {
+    const todoId = uuidLike(11);
+    const ids = Array.from({ length: 60 }, (_, day) =>
+      alarmId(todoId, '3h', DEADLINE + day * DAY_MS - OFFSETS['3h'])
+    );
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
 
 describe('已知哈希碰撞：线性探测必须兜住', () => {
   /**
-   * 由穷举搜索得到的真实碰撞对（FNV-1a 截 31 位后完全相同）：
-   * - `zuoleme.alarm:seed-6417:3h`
-   * - `zuoleme.alarm:seed-6548:due`
-   * 两者哈希值都是 1400701556。
+   * 由穷举搜索得到的真实碰撞对（FNV-1a 截 31 位后完全相同）。
+   *
+   * 搜索空间：`zuoleme.alarm:seed-<n>:3h:<DEADLINE - 3h>`，n 从 0 递增，
+   * 命中在 n = 198934 与 n = 568010，两者哈希同为 446450103。
    *
    * 用它来证明两件事：
    * 1. 哈希层**确实可能**碰撞（所以不能只依赖哈希）；
    * 2. `compileAlarms` 的探测逻辑真的把碰撞解开了（这条才是用户关心的）。
    */
-  const COLLIDE_A = { todoId: 'seed-6417', kind: '3h' as ReminderKind };
-  const COLLIDE_B = { todoId: 'seed-6548', kind: 'due' as ReminderKind };
+  const COLLIDING_HASH = 446450103;
+  const COLLIDE_A = { todoId: 'seed-198934', kind: '3h' as ReminderKind };
+  const COLLIDE_B = { todoId: 'seed-568010', kind: '3h' as ReminderKind };
+  const FIRE_AT = DEADLINE - OFFSETS['3h'];
 
-  it('两个不同档位确实哈希到同一个值（前提成立，不是假想）', () => {
-    const hashA = alarmId(COLLIDE_A.todoId, COLLIDE_A.kind);
-    const hashB = alarmId(COLLIDE_B.todoId, COLLIDE_B.kind);
+  it('两个不同待办的同一档位确实哈希到同一个值（前提成立，不是假想）', () => {
+    const hashA = alarmId(COLLIDE_A.todoId, COLLIDE_A.kind, FIRE_AT);
+    const hashB = alarmId(COLLIDE_B.todoId, COLLIDE_B.kind, FIRE_AT);
 
     expect(hashA).toBe(hashB);
-    expect(hashA).toBe(1400701556);
+    expect(hashA).toBe(COLLIDING_HASH);
   });
 
   it('compileAlarms 把碰撞对拆成两个不同 id，且都不超过上界', () => {
@@ -173,25 +201,24 @@ describe('已知哈希碰撞：线性探测必须兜住', () => {
     expectValidIds(ids);
 
     // 探测策略：先分配到的拿哈希原值，后分配到的 +1
+    // 顺序由 todoId 字典序决定：'seed-198934' < 'seed-568010'
     const first = alarms.find(
       (alarm) => alarm.todoId === COLLIDE_A.todoId && alarm.kind === COLLIDE_A.kind
     );
     const second = alarms.find(
       (alarm) => alarm.todoId === COLLIDE_B.todoId && alarm.kind === COLLIDE_B.kind
     );
-    expect(first?.id).toBe(1400701556);
-    expect(second?.id).toBe(1400701557);
+    expect(first?.id).toBe(COLLIDING_HASH);
+    expect(second?.id).toBe(COLLIDING_HASH + 1);
   });
 
   it('碰撞对在场时，其他待办的 id 不受影响（探测只影响后来者）', () => {
-    const neighbor = makeTodo('seed-6549');
+    const neighbor = makeTodo('seed-999999');
     const withCollision = compileAlarms(
       [makeTodo(COLLIDE_A.todoId), makeTodo(COLLIDE_B.todoId), neighbor],
       NOW
     );
-    const soloIds = new Set(
-      compileAlarms([neighbor], NOW).map((alarm) => alarm.id)
-    );
+    const soloIds = new Set(compileAlarms([neighbor], NOW).map((alarm) => alarm.id));
 
     const neighborIds = withCollision
       .filter((alarm) => alarm.todoId === neighbor.id)
@@ -205,10 +232,10 @@ describe('已知哈希碰撞：线性探测必须兜住', () => {
 });
 
 describe('id 分配的确定性与稳定性', () => {
-  it('无碰撞时 alarm.id 就等于 alarmId(todoId, kind)（可直接反查）', () => {
+  it('无碰撞时 alarm.id 就等于 alarmId(todoId, kind, fireAt)（可直接反查）', () => {
     const todos = [makeTodo(uuidLike(1)), makeTodo(uuidLike(2))];
     for (const alarm of compileAlarms(todos, NOW)) {
-      expect(alarm.id).toBe(alarmId(alarm.todoId, alarm.kind));
+      expect(alarm.id).toBe(alarmId(alarm.todoId, alarm.kind, alarm.fireAt));
     }
   });
 

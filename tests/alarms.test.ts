@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { DAY_MS, HOUR_MS } from '../shared/reminders';
 import type { Todo } from '../shared/types';
-import { ALARM_ID_MAX, alarmId, compileAlarms, countPendingAlarms, hashAlarmKey } from '../src/lib/alarms';
+import { NO_REPEAT } from '../shared/types';
+import {
+  ALARM_ID_MAX,
+  alarmId,
+  compileAlarms,
+  countPendingAlarms,
+  hashAlarmKey,
+} from '../src/lib/alarms';
 
 /**
  * 闹钟编译层测试。
@@ -11,6 +18,11 @@ import { ALARM_ID_MAX, alarmId, compileAlarms, countPendingAlarms, hashAlarmKey 
  * 1. 档位数量与 planReminders 完全一致（不补发已过去的档位）；
  * 2. 同一条待办的不同档位拿到**不同 id** —— 否则 Android 通知会互相覆盖，
  *    用户「每件事、每一档都要单独一条通知」的要求就落空了。
+ *
+ * 注意：闹钟结构里**没有 body**。通知正文由原生侧在触发时刻用
+ * `deadline - 当前时间` 现算（见 ReminderNotifier.remainingText），
+ * 所以这里断言的是 `deadline` 与 `fireAt`，不是文案。
+ * 也绝不含 content —— 正文只在详情页看，不进通知。
  */
 
 /** 测试固定基准时间：2026-01-01 00:00:00 UTC */
@@ -25,8 +37,10 @@ function makeTodo(overrides: Partial<Todo> = {}): Todo {
   return {
     id: 'todo-a',
     title: '交周报',
+    content: '',
     deadline: NOW + 10 * DAY_MS,
     done: false,
+    repeat: NO_REPEAT,
     createdAt: NOW - DAY_MS,
     updatedAt: NOW - DAY_MS,
     ...overrides,
@@ -52,10 +66,23 @@ describe('compileAlarms', () => {
       todo.deadline,
     ]);
 
-    // 标题与正文沿用既有文案：标题 = 待办标题，正文 = reminderBody(kind)
-    expect(alarms[0].title).toBe('交周报');
-    expect(alarms[5].body).toBe('已到截止时间');
-    expect(alarms[3].body).toBe('还有 3 小时截止');
+    // 标题 = 待办标题；每条都带上该实例的 deadline（原生据此现算剩余时间）
+    for (const alarm of alarms) {
+      expect(alarm.title).toBe('交周报');
+      expect(alarm.deadline).toBe(todo.deadline);
+      expect(alarm.todoId).toBe(todo.id);
+    }
+  });
+
+  it('通知结构里没有 body，也没有 content（正文只在详情页看）', () => {
+    const todo = makeTodo({ content: '本周重点：三期上线复盘' });
+    const alarms = compileAlarms([todo], NOW);
+
+    expect(alarms.length).toBeGreaterThan(0);
+    for (const alarm of alarms) {
+      expect(Object.keys(alarm).sort()).toEqual(['deadline', 'fireAt', 'id', 'kind', 'title', 'todoId']);
+      expect(JSON.stringify(alarm)).not.toContain('三期上线复盘');
+    }
   });
 
   it('3 小时后截止只生成 2 条（1h、due），已过去的档位不补发', () => {
@@ -91,11 +118,20 @@ describe('compileAlarms', () => {
       expect(id).toBeGreaterThan(0);
       expect(id).toBeLessThanOrEqual(ALARM_ID_MAX);
     }
+  });
 
-    // 指定待办-档位 → id 是稳定映射（同一进程内重复编译结果一致）
-    expect(alarmId('todo-a', '7d')).toBe(alarmId('todo-a', '7d'));
-    expect(alarmId('todo-a', '7d')).not.toBe(alarmId('todo-a', '3d'));
-    expect(alarmId('todo-a', '7d')).not.toBe(alarmId('todo-b', '7d'));
+  it('同一 (待办, 档位, 触发时刻) 的 id 稳定，换任一项都会变', () => {
+    const deadline = NOW + 10 * DAY_MS;
+    const fireAt7d = deadline - 7 * DAY_MS;
+
+    // 幂等：同样的三元组永远同一个 id
+    expect(alarmId('todo-a', '7d', fireAt7d)).toBe(alarmId('todo-a', '7d', fireAt7d));
+    // 换档位
+    expect(alarmId('todo-a', '7d', fireAt7d)).not.toBe(alarmId('todo-a', '3d', fireAt7d));
+    // 换待办
+    expect(alarmId('todo-a', '7d', fireAt7d)).not.toBe(alarmId('todo-b', '7d', fireAt7d));
+    // 换实例时刻（重复任务的同一档位、不同实例必须不同 id，否则会互相覆盖）
+    expect(alarmId('todo-a', '7d', fireAt7d)).not.toBe(alarmId('todo-a', '7d', fireAt7d + DAY_MS));
   });
 
   it('输出按触发时刻升序，并带上来源待办 id', () => {
@@ -130,7 +166,7 @@ describe('hashAlarmKey', () => {
   });
 
   it('相同键稳定、不同键（大概率）不同', () => {
-    expect(hashAlarmKey('zuoleme.alarm:x:due')).toBe(hashAlarmKey('zuoleme.alarm:x:due'));
-    expect(hashAlarmKey('zuoleme.alarm:x:due')).not.toBe(hashAlarmKey('zuoleme.alarm:y:due'));
+    expect(hashAlarmKey('zuoleme.alarm:x:due:1')).toBe(hashAlarmKey('zuoleme.alarm:x:due:1'));
+    expect(hashAlarmKey('zuoleme.alarm:x:due:1')).not.toBe(hashAlarmKey('zuoleme.alarm:y:due:1'));
   });
 });

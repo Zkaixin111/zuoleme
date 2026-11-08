@@ -7,26 +7,28 @@ import android.os.PowerManager
 import android.util.Log
 
 /**
- * 闹钟到点时的接收器：发出通知。
+ * 提醒到点时的接收器：发一条静音通知。
  *
  * 由 `AlarmManager.setExactAndAllowWhileIdle` 触发，因此**不需要应用在运行**，
- * 甚至不需要屏幕点亮（RTC_WAKEUP 会把设备从 Doze 里唤醒）。
+ * 也不需要屏幕点亮（RTC_WAKEUP 会把设备从 Doze 里唤醒）。
  *
- * 通知 id 用闹钟 id，所以同一件事的六档提醒是 6 条互不覆盖的通知。
+ * 通知正文在这里现算：`deadline - 当前时间`。所以补发（晚触发）时文案依然准确，
+ * 例如关机一夜后补发，会说「已逾期 9小时」而不是「还有 1小时截止」。
  */
 class AlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val alarmId = intent.getIntExtra(ReminderStore.EXTRA_ID, 0)
-        val title = intent.getStringExtra(ReminderStore.EXTRA_TITLE) ?: "做了么"
-        val body = intent.getStringExtra(ReminderStore.EXTRA_BODY) ?: "已到截止时间"
+        val todoId = intent.getStringExtra(ReminderStore.EXTRA_TODO_ID) ?: ""
+        val title = intent.getStringExtra(ReminderStore.EXTRA_TITLE) ?: DEFAULT_TITLE
+        val deadline = intent.getLongExtra(ReminderStore.EXTRA_DEADLINE, 0L)
 
         if (alarmId <= 0) {
-            Log.w(TAG, "收到非法闹钟广播，忽略")
+            Log.w(TAG, "收到非法提醒广播，忽略")
             return
         }
 
-        // 部分机型在 Doze 唤醒后会给极短的处理窗口，短暂持锁确保通知能发出去
+        // 部分机型在 Doze 唤醒后只给极短的处理窗口，短暂持锁确保通知能发出去
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
         var wakeLock: PowerManager.WakeLock? = null
         try {
@@ -39,7 +41,9 @@ class AlarmReceiver : BroadcastReceiver() {
         }
 
         try {
-            ReminderNotifier.notifyReminder(context, alarmId, title, body)
+            val remaining = if (deadline > 0L) deadline - System.currentTimeMillis() else 0L
+            val body = ReminderNotifier.remainingText(remaining)
+            ReminderNotifier.notifyReminder(context, alarmId, todoId, title, body)
         } catch (error: Exception) {
             Log.e(TAG, "发送提醒通知失败 id=$alarmId", error)
         } finally {
@@ -55,6 +59,9 @@ class AlarmReceiver : BroadcastReceiver() {
 
     private companion object {
         const val TAG = "AlarmReceiver"
+
+        /** 标题兜底文案 */
+        const val DEFAULT_TITLE = "做了么"
 
         /** WakeLock 最长持有时长：10 秒足够发一条通知 */
         const val WAKE_LOCK_TIMEOUT_MS = 10_000L

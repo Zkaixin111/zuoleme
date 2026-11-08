@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DAY_MS, HOUR_MS } from '../shared/reminders';
 import type { Todo } from '../shared/types';
+import { NO_REPEAT } from '../shared/types';
 import { compileAlarms, countPendingAlarms } from '../src/lib/alarms';
 
 /**
@@ -27,8 +28,10 @@ function makeTodo(id: string, overrides: Partial<Todo> = {}): Todo {
   return {
     id,
     title: `待办 ${id}`,
+    content: '',
     deadline: NOW + 10 * DAY_MS,
     done: false,
+    repeat: NO_REPEAT,
     createdAt: NOW - DAY_MS,
     updatedAt: NOW - DAY_MS,
     ...overrides,
@@ -125,15 +128,16 @@ describe('compileAlarms：其余输出不变量', () => {
     }
   });
 
-  it('每条闹钟都带非空标题与文案（通知不能是空白）', () => {
-    const alarms = compileAlarms([makeTodo('a', { title: '交周报' })], NOW);
+  it('每条闹钟都带非空标题与该实例的 deadline（正文由原生现算，结构里没有 body）', () => {
+    const deadline = NOW + 30 * DAY_MS;
+    const alarms = compileAlarms([makeTodo('a', { title: '交周报', deadline })], NOW);
 
     for (const alarm of alarms) {
       expect(alarm.title).toBe('交周报');
-      expect(alarm.body.length).toBeGreaterThan(0);
+      expect(alarm.deadline).toBe(deadline);
+      // 结构里绝不能有 body 字段（正文改成触发时刻现算）
+      expect(Object.prototype.hasOwnProperty.call(alarm, 'body')).toBe(false);
     }
-    expect(alarms.find((alarm) => alarm.kind === 'due')?.body).toBe('已到截止时间');
-    expect(alarms.find((alarm) => alarm.kind === '1h')?.body).toBe('还有 1 小时截止');
   });
 
   it('countPendingAlarms 与实际排出的条数一致（界面数字不会骗人）', () => {

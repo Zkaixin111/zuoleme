@@ -73,8 +73,28 @@ describe('持久化：开机重建读的就是排程时写的（最致命的静�
     const saved = captureAll(REMINDER_STORE, /item\.put\("(\w+)"/g).sort();
     const loaded = captureAll(REMINDER_STORE, /item\.opt(?:Int|Long|String)\("(\w+)"/g).sort();
 
-    expect(saved).toEqual(['body', 'fireAt', 'id', 'title']);
-    expect(loaded).toEqual(['body', 'fireAt', 'id', 'title']);
+    // 五个字段：id 既是通知 id 也是 PendingIntent requestCode；
+    // todoId 用于点通知开详情页；deadline 用于触发时刻现算剩余时间。
+    expect(saved).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
+    expect(loaded).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
+  });
+
+  it('存盘格式带版本号，字段结构变动时旧记录整体丢弃（派生数据，宁可重排也不解析错位）', () => {
+    expect(REMINDER_STORE).toMatch(/KEY_VERSION = "alarms_version"/);
+    expect(REMINDER_STORE).toMatch(/FORMAT_VERSION = 2/);
+    expect(REMINDER_STORE).toMatch(/version != FORMAT_VERSION/);
+  });
+
+  it('排程顺序：先 load 旧记录 → 先 save 新列表 → 再取消旧 PendingIntent', () => {
+    const body = REMINDER_STORE.slice(REMINDER_STORE.indexOf('fun scheduleAll'));
+    const loadIndex = body.indexOf('load(context)');
+    const saveIndex = body.indexOf('save(context, future)');
+    const cancelIndex = body.indexOf('cancelPendingIntents(');
+
+    expect(loadIndex).toBeGreaterThan(-1);
+    expect(saveIndex).toBeGreaterThan(loadIndex);
+    // 落盘必须早于取消：否则「清盘 → 写盘」之间进程被杀，重启后读到空记录，全部静默失效
+    expect(cancelIndex).toBeGreaterThan(saveIndex);
   });
 
   it('开机重建会过滤掉已过去的闹钟（不补发历史提醒）', () => {
@@ -108,12 +128,55 @@ describe('PendingIntent 的唯一性与 flag', () => {
 describe('通知：id、渠道与重要性', () => {
   it('通知 id 直接用 alarm id（不同档位 = 不同通知，不会互相覆盖）', () => {
     expect(NOTIFIER).toMatch(/manager\.notify\(\s*alarmId\s*,/);
-    expect(ALARM_RECEIVER).toMatch(/notifyReminder\(context,\s*alarmId,\s*title,\s*body\)/);
+    expect(ALARM_RECEIVER).toMatch(
+      /notifyReminder\(context,\s*alarmId,\s*todoId,\s*title,\s*body\)/
+    );
   });
 
-  it('渠道 IMPORTANCE 是 HIGH（低重要性会被折叠，用户看不到）', () => {
+  it('渠道 IMPORTANCE 是 HIGH（低重要性会被折叠，用户看不到横幅）', () => {
     expect(NOTIFIER).toMatch(/NotificationChannel\([^)]*IMPORTANCE_HIGH\)/);
     expect(NOTIFIER).not.toMatch(/IMPORTANCE_LOW|IMPORTANCE_MIN|IMPORTANCE_DEFAULT/);
+  });
+
+  it('渠道是静音的：setSound(null, null) + 关闭震动（要弹出，但不出声）', () => {
+    expect(NOTIFIER).toMatch(/setSound\(null,\s*null\)/);
+    expect(NOTIFIER).toMatch(/enableVibration\(false\)/);
+    expect(NOTIFIER).toMatch(/\.setSilent\(true\)/);
+  });
+
+  it('渠道 id 换成了新的 reminders_v3，并删除带声音的旧渠道', () => {
+    // 渠道的声音属性创建后不可修改，只能换 id + 删旧渠道
+    expect(NOTIFIER).toMatch(/CHANNEL_ID = "reminders_v3"/);
+    expect(NOTIFIER).toMatch(/LEGACY_CHANNEL_IDS = listOf\("reminders"\)/);
+    expect(NOTIFIER).toMatch(/deleteNotificationChannel\(legacyId\)/);
+  });
+
+  it('锁屏可见（VISIBILITY_PUBLIC）', () => {
+    expect(NOTIFIER).toMatch(/lockscreenVisibility = NotificationCompat\.VISIBILITY_PUBLIC/);
+    expect(NOTIFIER).toMatch(/setVisibility\(NotificationCompat\.VISIBILITY_PUBLIC\)/);
+  });
+
+  it('通知里只有标题和剩余时间，没有待办内容', () => {
+    // 正文是「还有 X 截止 / 已逾期 X」，由 remainingText 现算
+    expect(NOTIFIER).toMatch(/fun remainingText\(/);
+    expect(NOTIFIER).toMatch(/"还有\$\{durationText\(remainingMs\)\}截止"/);
+    expect(NOTIFIER).toMatch(/"已逾期\$\{durationText\(overdue\)\}"/);
+    // 提醒记录里根本没有 content 字段（待办内容只进详情页）
+    expect(REMINDER_STORE).not.toMatch(/put\("content"/);
+    expect(NOTIFIER).not.toMatch(/optString\("content"/);
+  });
+
+  it('发通知时剩余时间是触发时刻现算的（补发也准确）', () => {
+    expect(ALARM_RECEIVER).toMatch(/deadline - System\.currentTimeMillis\(\)/);
+    expect(ALARM_RECEIVER).toMatch(/remainingText\(remaining\)/);
+  });
+
+  it('点通知能回到对应的待办详情页（携带 todoId 并落到 pending_open_todo）', () => {
+    expect(NOTIFIER).toMatch(/putExtra\(ReminderStore\.EXTRA_TODO_ID,\s*todoId\)/);
+    expect(REMINDER_STORE).toMatch(/KEY_PENDING_OPEN = "pending_open_todo"/);
+    expect(MAIN_ACTIVITY).toMatch(/setPendingOpen/);
+    expect(PLUGIN).toMatch(/fun getPendingOpen\(/);
+    expect(PLUGIN).toMatch(/ReminderStore\.consumePendingOpen\(context\)/);
   });
 
   it('发通知前一定会 ensureChannel（Android 8+ 没有渠道会被静默丢弃）', () => {
@@ -148,9 +211,9 @@ describe('JS ↔ Kotlin 的闹钟字段协议', () => {
     const pluginKeys = captureAll(PLUGIN, /item\.opt(?:Int|Long|String)\("(\w+)"/g).sort();
     const storeKeys = captureAll(REMINDER_STORE, /item\.put\("(\w+)"/g).sort();
 
-    expect(jsKeys).toEqual(['body', 'fireAt', 'id', 'title']);
-    expect(pluginKeys).toEqual(['body', 'fireAt', 'id', 'title']);
-    expect(storeKeys).toEqual(['body', 'fireAt', 'id', 'title']);
+    expect(jsKeys).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
+    expect(pluginKeys).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
+    expect(storeKeys).toEqual(['deadline', 'fireAt', 'id', 'title', 'todoId']);
   });
 
   it('原生侧把「非法 id / 过去的 fireAt」当无效条目丢掉（不在系统里排错误时间）', () => {

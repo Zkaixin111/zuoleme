@@ -1,17 +1,14 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { Todo } from '../../shared/types';
-import { compileAlarms, type ReminderAlarm } from './alarms';
+import { compileAlarmsWithStats } from './alarms';
 
 /**
- * 原生闹钟桥接层。
+ * 原生提醒桥接层。
  *
- * 上层（React）只说「这批待办应该有哪些闹钟」，本层负责：
- * 1. 用 `compileAlarms` 把待办编译成扁平闹钟列表；
- * 2. 调用自研的 `ReminderAlarm` 原生插件（AlarmManager + 通知）；
- * 3. 只有在原生环境（APK）里才真正做事 —— 在浏览器 / vitest 里所有调用都是安全的空操作。
- *
- * 为什么不用 `@capacitor/local-notifications`：
- * 它在设备重启后不会重建闹钟，而「重启后照常提醒」是硬需求。
+ * 上层（React）只说「这批待办应该有哪些提醒」，本层负责：
+ * 1. 用 `compileAlarmsWithStats` 把待办（含重复任务展开）编译成扁平提醒列表；
+ * 2. 调用自研的 `ReminderAlarm` 原生插件（AlarmManager + 静音横幅通知）；
+ * 3. 只有在原生环境（APK）里才真正做事 —— 浏览器 / vitest 下所有调用都是安全的空操作。
  */
 
 /** 原生侧 `getPermissionState()` 的返回结构 */
@@ -26,45 +23,56 @@ export interface NativePermissionState {
 
 /** 界面用：在原生状态外补一个「当前环境是否支持」 */
 export interface PermissionSnapshot extends NativePermissionState {
-  /** false 表示不是 APK 环境（浏览器），系统闹钟不可用 */
+  /** false 表示不是 APK 环境（浏览器），系统提醒不可用 */
   supported: boolean;
 }
 
-/** 传给原生插件的闹钟结构（字段与 Kotlin 侧 AlarmRecord 一一对应） */
+/**
+ * 传给原生插件的提醒结构。
+ *
+ * 字段与 Kotlin 侧 `AlarmRecord` 必须一一对应：
+ * **没有 body** —— 通知正文由原生在触发时刻用 `deadline - 当前时间` 现算，
+ * 这样文案永远准确（补发 20 小时前的提醒也不会说「还有 3 小时」）。
+ * 也没有 content —— 正文只在详情页看，绝不进通知。
+ */
 export interface NativeAlarm {
   id: number;
+  todoId: string;
   title: string;
-  body: string;
+  /** 该实例的截止时刻 */
+  deadline: number;
+  /** 触发时刻 */
   fireAt: number;
 }
 
 /** 自研原生插件的方法签名 */
 interface ReminderAlarmPlugin {
   /**
-   * 全量替换：存盘 + 取消旧闹钟 + 逐条 setExactAndAllowWhileIdle。
+   * 全量替换：存盘 + 取消旧提醒 + 逐条 setExactAndAllowWhileIdle。
    *
-   * 原生会返回 `{ scheduled }` —— 真正排上的条数（已过滤过去时刻、已扣除失败），
-   * 而不是我们传进去的条数。
+   * 原生返回 `{ scheduled }` —— 真正排上的条数（已过滤过去时刻、已扣除失败）。
    */
   scheduleAll(options: { alarms: NativeAlarm[] }): Promise<{ scheduled?: number } | void>;
-  /** 取消全部闹钟并清空持久化记录 */
+  /** 取消全部提醒并清空持久化记录 */
   cancelAll(): Promise<void>;
   /** 读取三项系统授权状态 */
   getPermissionState(): Promise<NativePermissionState>;
   /** Android 13+ 请求通知权限 */
   requestNotificationPermission(): Promise<{ notifications: boolean }>;
-  /** 跳转「精确闹钟」系统设置页 */
+  /** 跳转「准时触发」系统设置页 */
   openExactAlarmSettings(): Promise<void>;
   /** 跳转「电池优化」系统设置页 */
   openBatterySettings(): Promise<void>;
-  /** 跳转本应用的通知设置页（拒绝过权限后只能从这里手动打开） */
+  /** 跳转本应用的通知设置页 */
   openNotificationSettings(): Promise<void>;
+  /** 取走并清空「用户点了哪条通知」（用于打开对应详情页） */
+  getPendingOpen(): Promise<{ todoId?: string | null }>;
 }
 
 /** 插件代理对象；在 Web 上调用会抛「未实现」，因此所有调用都先判平台 */
 const ReminderAlarm = registerPlugin<ReminderAlarmPlugin>('ReminderAlarm');
 
-/** 非原生环境的默认状态（浏览器打开网页版时的展示） */
+/** 非原生环境的默认状态 */
 const WEB_PERMISSION_STATE: PermissionSnapshot = {
   supported: false,
   notifications: false,
@@ -77,7 +85,6 @@ export function isNativePlatform(): boolean {
   try {
     return Capacitor.isNativePlatform();
   } catch {
-    // Capacitor 未注入（极老的 WebView）时按浏览器处理
     return false;
   }
 }
@@ -85,53 +92,54 @@ export function isNativePlatform(): boolean {
 /** 一次全量排程的结果 */
 export interface ScheduleResult {
   ok: boolean;
-  /** 本次提交给系统的闹钟条数 */
+  /** 真正交给系统的提醒条数 */
   scheduled: number;
+  /** 因上限被丢弃的条数（界面可提示「只排了最近 240 条」） */
+  truncated: number;
   /** 失败原因（中文，可直接展示） */
   error: string | null;
 }
 
 /**
- * 按当前待办全量重排闹钟。
+ * 按当前待办全量重排提醒。
  *
- * 为什么是全量而不是增量：数据量极小（几十条），全量重排逻辑简单、
- * 不会出现「删除某档后残留旧闹钟」的隐蔽 bug；代价只是几十次 setExact。
+ * 为什么是全量而不是增量：数据量极小，全量重排逻辑简单、
+ * 不会出现「删除某档后残留旧提醒」的隐蔽 bug。
  *
  * @param todos 全部待办
- * @param now 当前时间（毫秒时间戳），默认取系统时间
+ * @param now 当前时间（毫秒），默认取系统时间
  */
 export async function syncAlarms(todos: readonly Todo[], now: number = Date.now()): Promise<ScheduleResult> {
-  const alarms = compileAlarms(todos, now);
+  const { alarms, truncated } = compileAlarmsWithStats(todos, now);
 
   if (!isNativePlatform()) {
-    // 浏览器里没有 AlarmManager，静默跳过（界面会单独提示「仅 APK 可用」）
-    return { ok: true, scheduled: 0, error: null };
+    return { ok: true, scheduled: 0, truncated: 0, error: null };
   }
 
-  const payload: NativeAlarm[] = alarms.map((alarm: ReminderAlarm) => ({
+  const payload: NativeAlarm[] = alarms.map((alarm) => ({
     id: alarm.id,
+    todoId: alarm.todoId,
     title: alarm.title,
-    body: alarm.body,
+    deadline: alarm.deadline,
     fireAt: alarm.fireAt,
   }));
 
   try {
     const result = await ReminderAlarm.scheduleAll({ alarms: payload });
-    // 优先用原生回报的条数：原生会过滤已过去的时刻、排程失败也不计入，
-    // 比 payload.length 更接近「系统里真实排上的闹钟数」
     const reported = result && typeof result.scheduled === 'number' ? result.scheduled : payload.length;
-    return { ok: true, scheduled: reported, error: null };
+    return { ok: true, scheduled: reported, truncated, error: null };
   } catch (error) {
     return {
       ok: false,
       scheduled: 0,
-      error: error instanceof Error ? error.message : '设置系统闹钟失败，提醒可能不会响',
+      truncated,
+      error: error instanceof Error ? error.message : '设置系统提醒失败，提醒可能不会响',
     };
   }
 }
 
 /**
- * 取消全部闹钟（清空数据时使用）。
+ * 取消全部提醒（清空数据时使用）。
  */
 export async function cancelAllAlarms(): Promise<void> {
   if (!isNativePlatform()) {
@@ -181,7 +189,7 @@ export async function requestNotificationPermission(): Promise<boolean> {
   }
 }
 
-/** 跳转系统「精确闹钟」授权页 */
+/** 跳转系统「准时触发」授权页 */
 export async function openExactAlarmSettings(): Promise<void> {
   if (!isNativePlatform()) {
     return;
@@ -208,8 +216,7 @@ export async function openBatterySettings(): Promise<void> {
 /**
  * 跳转本应用的通知设置页。
  *
- * 场景：用户在授权框里点了「不允许」后，Android 不会再弹授权框，
- * 此时只能引导他去系统里手动打开。
+ * 用户在授权框里点「不允许」后系统不再弹框，只能引导他去手动打开。
  */
 export async function openNotificationSettings(): Promise<void> {
   if (!isNativePlatform()) {
@@ -219,5 +226,25 @@ export async function openNotificationSettings(): Promise<void> {
     await ReminderAlarm.openNotificationSettings();
   } catch {
     // 部分 ROM 没有该页面，忽略
+  }
+}
+
+/**
+ * 取走「用户点了哪条通知」。
+ *
+ * 原生侧读一次就清空，所以不会重复跳转。
+ *
+ * @returns 待办 id；没有待处理的点击时返回 null
+ */
+export async function consumePendingOpen(): Promise<string | null> {
+  if (!isNativePlatform()) {
+    return null;
+  }
+  try {
+    const result = await ReminderAlarm.getPendingOpen();
+    const todoId = typeof result.todoId === 'string' ? result.todoId : null;
+    return todoId !== null && todoId.length > 0 ? todoId : null;
+  } catch {
+    return null;
   }
 }
