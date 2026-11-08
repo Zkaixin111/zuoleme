@@ -72,9 +72,9 @@ export function HomeView({
   const groups = groupTodos(pending, now);
 
   return (
-    // 底部留白要容下「历史任务行 + 主按钮 + 安全区」，否则最后一条待办会被底栏盖住
-    // （底栏实际高度 ≈ 8 + 36 + 6 + 52 + max(12, safe) + 1，这里取 144 + safe，够用且不浪费）
-    <div className="pb-[calc(9rem+env(safe-area-inset-bottom))]">
+    // 底部留白按底栏实际高度算：底栏只剩一行（≈ 8 + 44 + max(12, safe) + 1 ≈ 65 + safe），
+    // 4.5rem(72) + safe 足够，不再按「历史行 + 主按钮」两行留一大块空白
+    <div className="pb-[calc(4.5rem+env(safe-area-inset-bottom))]">
       <header className="mb-5 flex items-end justify-between px-1">
         <div>
           <p className="text-xs text-faint">{formatTodayHeader(now)}</p>
@@ -93,16 +93,28 @@ export function HomeView({
       ) : null}
 
       {selectionMode ? null : (
-        <PinnedCard
-          todo={pinned}
-          now={now}
-          reminderCount={pinnedReminderCount}
-          undatedCount={undatedCount}
-          busy={busyId === pinned?.id}
-          onDone={onToggle}
-          onOpen={onOpen}
-          onCreate={onCreate}
-        />
+        <>
+          <PinnedCard
+            todo={pinned}
+            now={now}
+            reminderCount={pinnedReminderCount}
+            undatedCount={undatedCount}
+            busy={busyId === pinned?.id}
+            onDone={onToggle}
+            onOpen={onOpen}
+            onCreate={onCreate}
+          />
+          {/* 新建按钮放在常驻卡正下方、与卡片同宽（左边缘对齐），底部只留「历史任务」 */}
+          <div className="mt-3">
+            <button
+              type="button"
+              className="btn-primary h-[52px] w-full rounded-[12px] text-[15px] font-semibold"
+              onClick={onCreate}
+            >
+              新建待办
+            </button>
+          </div>
+        </>
       )}
 
       <div className="mt-6">
@@ -112,7 +124,7 @@ export function HomeView({
 
         {!loading && pending.length === 0 ? (
           <p className="card px-4 py-6 text-center text-sm leading-relaxed text-soft">
-            还没有待办。点下面的按钮加一件，写上标题、内容和截止时间。
+            还没有待办。点上面的「新建待办」加一件，写上标题、内容和截止时间。
           </p>
         ) : null}
 
@@ -157,22 +169,15 @@ export function HomeView({
         /*
          * 实底工具条（`bg-paper` + 顶部发丝线）：之前只有 `pointer-events-none` 没有背景，
          * 列表会从按钮缝隙里透出来，看起来像「浮在内容流里」，不像固定在底部。
+         * 现在底部只放「历史任务」一条（新建按钮已上移到常驻卡下方）。
          */
         <div className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-md border-t border-line bg-paper px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <button
             type="button"
-            className="mb-1.5 flex h-9 w-full items-center justify-center text-[13px] text-soft active:opacity-60"
+            className="flex h-11 w-full items-center justify-center rounded-[10px] border border-line bg-surface text-[13px] text-soft active:opacity-60"
             onClick={onOpenHistory}
           >
             历史任务 · <span className="ml-1 text-faint">{doneCount}</span>
-          </button>
-          {/* 主按钮靠尺寸 + 字重 + 深绿实底取得重量，不用阴影/渐变 */}
-          <button
-            type="button"
-            className="btn-primary h-[52px] w-full rounded-[12px] text-[15px] font-semibold"
-            onClick={onCreate}
-          >
-            新建待办
           </button>
         </div>
       )}

@@ -3,6 +3,13 @@ import { toDateTimeLocalValue } from '../../shared/format';
 import type { RepeatRule, Todo } from '../../shared/types';
 import { NO_REPEAT } from '../../shared/types';
 import { resolveDeadlineDraft } from '../lib/deadline-draft';
+import {
+  defaultExpanded,
+  sectionSummaries,
+  type EditorSectionKey,
+  type EditorSectionState,
+} from '../lib/editor-sections';
+import { CollapsibleSection } from './CollapsibleSection';
 import { FloatingBack } from './FloatingBack';
 import { RepeatPicker } from './RepeatPicker';
 
@@ -100,7 +107,29 @@ export function TodoEditor({
    */
   const initialDeadlineInput = useRef<string>(deadlineValue);
 
+  /**
+   * 三个折叠区块的展开状态（受控，状态留在这一层）。
+   *
+   * 默认策略：**编辑已有待办时三块全收**（用户进来多半只是改标题或内容，
+   * 不想先滚过一堆控件）；**新建时展开「截止时间」**，否则用户不知道系统
+   * 已经默认给了「1 小时后」，会误以为没设时间。
+   */
+  const [expanded, setExpanded] = useState<EditorSectionState>(() => defaultExpanded(todo === null));
+
+  /**
+   * 切换某一块的展开状态。
+   *
+   * @param key 区块名
+   */
+  const toggleSection = useCallback((key: EditorSectionKey): void => {
+    setExpanded((previous) => ({ ...previous, [key]: !previous[key] }));
+  }, []);
+
   // 切换到另一条待办编辑时同步表单
+  //
+  // 依赖刻意是 `todo?.id` 而不是 `todo` 对象本身：`App` 每次回到前台都会重新 `load()`
+  // 生成一批新对象，对象身份变了但「还是同一条待办」。如果按对象身份重置，
+  // 用户在一次切后台回来之后，正在编辑、还没保存的内容会被**静默清空**。
   useEffect(() => {
     const nextInput = toDateTimeLocalValue(todo?.deadline ?? defaultDeadline());
     setTitle(todo?.title ?? '');
@@ -110,9 +139,11 @@ export function TodoEditor({
     setAdvanceReminder(todo?.advanceReminder ?? true);
     setRepeat(todo?.repeat ?? NO_REPEAT);
     setError(null);
+    setExpanded(defaultExpanded(todo === null));
     originalDeadline.current = todo?.deadline ?? null;
     initialDeadlineInput.current = nextInput;
-  }, [todo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 见上面的注释：只认 id
+  }, [todo?.id]);
 
   /** 用户是否动过时间输入框（含快捷按钮） */
   const deadlineTouched = deadlineValue !== initialDeadlineInput.current;
@@ -202,6 +233,21 @@ export function TodoEditor({
     }
   };
 
+  /**
+   * 折叠区块头部的摘要文案。
+   *
+   * 摘要必须**跟着 state 走**：收起状态下用户看不到控件，只剩这行字，
+   * 它要是滞后的，用户就会以为改动没生效（或者以为没设置）。
+   * 刻意不做 memo —— 一次 `formatDeadline` 的开销远小于传错值的代价。
+   */
+  const summaries = sectionSummaries({
+    hasDeadline,
+    deadlineInput: deadlineValue,
+    repeat,
+    advanceReminder,
+    now: Date.now(),
+  });
+
   return (
     <div className="pb-44">
       <div className="mb-5 flex items-center">
@@ -238,87 +284,115 @@ export function TodoEditor({
       </label>
 
       <div className="mt-5">
-        <span className="label">截止时间</span>
-        <div className="mt-1 flex gap-1.5">
-          <button
-            type="button"
-            aria-pressed={hasDeadline}
-            onClick={() => setHasDeadline(true)}
-            className={`rounded-control border px-3 py-2 text-[13px] ${
-              hasDeadline ? 'border-accent bg-accent-soft text-accent' : 'border-line-strong bg-surface text-soft'
-            }`}
-          >
-            设置截止时间
-          </button>
-          <button
-            type="button"
-            aria-pressed={!hasDeadline}
-            onClick={() => setHasDeadline(false)}
-            className={`rounded-control border px-3 py-2 text-[13px] ${
-              !hasDeadline ? 'border-accent bg-accent-soft text-accent' : 'border-line-strong bg-surface text-soft'
-            }`}
-          >
-            不设时间
-          </button>
-        </div>
+        <CollapsibleSection
+          title="截止时间"
+          summary={summaries.deadline}
+          open={expanded.deadline}
+          onToggle={() => toggleSection('deadline')}
+          sectionId="section-deadline"
+        >
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              aria-pressed={hasDeadline}
+              onClick={() => setHasDeadline(true)}
+              className={`rounded-control border px-3 py-2 text-[13px] ${
+                hasDeadline ? 'border-accent bg-accent-soft text-accent' : 'border-line-strong bg-surface text-soft'
+              }`}
+            >
+              设置截止时间
+            </button>
+            <button
+              type="button"
+              aria-pressed={!hasDeadline}
+              onClick={() => setHasDeadline(false)}
+              className={`rounded-control border px-3 py-2 text-[13px] ${
+                !hasDeadline ? 'border-accent bg-accent-soft text-accent' : 'border-line-strong bg-surface text-soft'
+              }`}
+            >
+              不设时间
+            </button>
+          </div>
 
-        {hasDeadline ? (
-          <>
-            <input
-              type="datetime-local"
-              className="field mt-2"
-              value={deadlineValue}
-              onChange={(event) => changeDeadline(event.target.value)}
-            />
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                className="btn-ghost !px-3 !py-2 text-xs"
-                onClick={() => changeDeadline(toDateTimeLocalValue(Date.now() + 30 * MINUTE_MS))}
-              >
-                30 分钟后
-              </button>
-              <button
-                type="button"
-                className="btn-ghost !px-3 !py-2 text-xs"
-                onClick={() => changeDeadline(toDateTimeLocalValue(Date.now() + HOUR_MS))}
-              >
-                1 小时后
-              </button>
-              <button
-                type="button"
-                className="btn-ghost !px-3 !py-2 text-xs"
-                onClick={() => changeDeadline(toDateTimeLocalValue(Date.now() + 3 * HOUR_MS))}
-              >
-                3 小时后
-              </button>
-              <button
-                type="button"
-                className="btn-ghost !px-3 !py-2 text-xs"
-                onClick={() => changeDeadline(toDateTimeLocalValue(tonightAt20()))}
-              >
-                今晚 20:00
-              </button>
-              <button
-                type="button"
-                className="btn-ghost !px-3 !py-2 text-xs"
-                onClick={() => changeDeadline(toDateTimeLocalValue(tomorrowAt9()))}
-              >
-                明天 9:00
-              </button>
-            </div>
-          </>
-        ) : (
-          <p className="mt-2 text-[11px] leading-relaxed text-faint">
-            不设时间的待办不会有任何提醒，只作为清单记着。
-          </p>
-        )}
-      </div>
+          {hasDeadline ? (
+            <>
+              <input
+                type="datetime-local"
+                className="field mt-2"
+                value={deadlineValue}
+                onChange={(event) => changeDeadline(event.target.value)}
+              />
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  className="btn-ghost !px-3 !py-2 text-xs"
+                  onClick={() => changeDeadline(toDateTimeLocalValue(Date.now() + 30 * MINUTE_MS))}
+                >
+                  30 分钟后
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !px-3 !py-2 text-xs"
+                  onClick={() => changeDeadline(toDateTimeLocalValue(Date.now() + HOUR_MS))}
+                >
+                  1 小时后
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !px-3 !py-2 text-xs"
+                  onClick={() => changeDeadline(toDateTimeLocalValue(Date.now() + 3 * HOUR_MS))}
+                >
+                  3 小时后
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !px-3 !py-2 text-xs"
+                  onClick={() => changeDeadline(toDateTimeLocalValue(tonightAt20()))}
+                >
+                  今晚 20:00
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !px-3 !py-2 text-xs"
+                  onClick={() => changeDeadline(toDateTimeLocalValue(tomorrowAt9()))}
+                >
+                  明天 9:00
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="mt-2 text-[11px] leading-relaxed text-faint">
+              不设时间的待办不会有任何提醒，只作为清单记着。
+            </p>
+          )}
+        </CollapsibleSection>
 
-      {hasDeadline ? (
-        <div className="mt-5">
+        <CollapsibleSection
+          title="重复"
+          summary={summaries.repeat}
+          open={hasDeadline && expanded.repeat}
+          onToggle={() => toggleSection('repeat')}
+          disabled={!hasDeadline}
+          sectionId="section-repeat"
+        >
+          <RepeatPicker value={repeat} onChange={setRepeat} disabled={!hasDeadline} />
+          {hasDeadline ? null : (
+            <p className="mt-1 text-[11px] leading-relaxed text-faint">重复需要截止时间。</p>
+          )}
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="提前提醒"
+          summary={summaries.advance}
+          open={hasDeadline && expanded.advance}
+          onToggle={() => toggleSection('advance')}
+          disabled={!hasDeadline}
+          sectionId="section-advance"
+        >
           <div className="flex items-center justify-between gap-3">
-            <span className="label">提前提醒</span>
+            <span className="text-[11px] leading-relaxed text-faint">
+              {advanceReminder ? '截止前分档提醒（会按重复周期自动收窄档位）。' : '关闭后只在到点那一刻提醒一次。'}
+            </span>
             <button
               type="button"
               role="switch"
@@ -337,24 +411,7 @@ export function TodoEditor({
               />
             </button>
           </div>
-          {advanceReminder ? (
-            <p className="mt-1 text-[11px] leading-relaxed text-faint">
-              截止前分档提醒（会按重复周期自动收窄档位）。
-            </p>
-          ) : (
-            <p className="mt-1 text-[11px] leading-relaxed text-faint">关闭后只在到点那一刻提醒一次。</p>
-          )}
-        </div>
-      ) : null}
-
-      <div className="mt-5">
-        <span className="label">重复</span>
-        <div className="mt-1">
-          <RepeatPicker value={repeat} onChange={setRepeat} disabled={!hasDeadline} />
-        </div>
-        {hasDeadline ? null : (
-          <p className="mt-1 text-[11px] leading-relaxed text-faint">重复需要截止时间。</p>
-        )}
+        </CollapsibleSection>
       </div>
 
       <p className="mt-4 text-[11px] leading-relaxed text-faint">

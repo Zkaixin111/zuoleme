@@ -47,7 +47,8 @@ describe('底部工具条：实底 + 顶线，不再透出列表', () => {
   });
 
   it('内容区底部留白按「底栏高度 + 安全区」算，不是拍脑袋的固定值', () => {
-    expect(HOME).toContain('pb-[calc(9rem+env(safe-area-inset-bottom))]');
+    // 底栏现在只剩「历史任务」一行（≈65 + safe），所以是 4.5rem 而不是之前两行时的 9rem
+    expect(HOME).toContain('pb-[calc(4.5rem+env(safe-area-inset-bottom))]');
   });
 
   it('底栏本身带安全区（全面屏手势条不会压住按钮）', () => {
@@ -55,35 +56,49 @@ describe('底部工具条：实底 + 顶线，不再透出列表', () => {
   });
 });
 
-describe('主次分明：「新建待办」明显更重', () => {
-  it('主按钮 52px 高、15px、半粗、12px 圆角、占满宽度', () => {
-    expect(HOME).toContain('btn-primary h-[52px] w-full rounded-[12px] text-[15px] font-semibold');
+describe('版面：新建按钮上移到常驻卡下方，底栏只留历史任务', () => {
+  it('新建按钮在 PinnedCard 之后（同一块 `selectionMode ? null` 分支里）', () => {
+    const pinned = HOME.indexOf('<PinnedCard');
+    const create = HOME.indexOf('新建待办');
+
+    expect(pinned).toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(pinned);
   });
 
-  it('历史任务降级成一行文字按钮（36px、13px、soft 色），不再是白底大块', () => {
-    expect(HOME).toContain('mb-1.5 flex h-9 w-full items-center justify-center text-[13px] text-soft');
-    // 不再有「历史任务」的白底卡片式按钮
-    expect(HOME).not.toContain('rounded-control border border-line bg-surface text-[13px] text-soft');
+  it('新建按钮包在 `mt-3` 容器里，与卡片同宽（不额外内缩）', () => {
+    expect(HOME).toContain('<div className="mt-3">');
+    // 允许出现的只有 w-full，不能出现 mx- 之类的额外内缩
+    const createBlock = HOME.slice(HOME.indexOf('<div className="mt-3">'), HOME.indexOf('新建待办'));
+    expect(createBlock).toContain('w-full');
+    expect(createBlock).not.toMatch(/\b(?:mx-|ml-|mr-|w-\[calc)/);
+  });
+
+  it('底栏容器里只有「历史任务」，没有「新建待办」', () => {
+    const bar = HOME.slice(HOME.indexOf('fixed inset-x-0 bottom-0 z-20'));
+
+    expect(bar).toContain('历史任务 ·');
+    expect(bar).not.toContain('新建待办');
+  });
+
+  it('历史任务是实底按钮：44px、白底、描边、10px 圆角', () => {
+    expect(HOME).toContain(
+      'flex h-11 w-full items-center justify-center rounded-[10px] border border-line bg-surface text-[13px] text-soft',
+    );
   });
 
   it('历史任务上的数字用 faint 弱化（它是次要信息）', () => {
     expect(HOME).toContain('<span className="ml-1 text-faint">{doneCount}</span>');
   });
 
-  it('两个按钮之间的间距是 6px（mb-1.5），并靠尺寸/字重取得层级而不是阴影', () => {
-    expect(HOME).toContain('mb-1.5 flex h-9');
+  it('主按钮靠尺寸/字重/深绿实底取得重量，仍然零阴影零渐变', () => {
+    expect(HOME).toContain('btn-primary h-[52px] w-full rounded-[12px] text-[15px] font-semibold');
     expect(HOME).not.toMatch(/\bshadow-/);
     expect(HOME).not.toMatch(/bg-gradient-/);
   });
 
-  it('主按钮确实比历史入口高（52 > 36）', () => {
-    const primary = Number(HOME.match(/h-\[(\d+)px\] w-full rounded-\[12px\]/)?.[1]);
-    const secondary = Number(HOME.match(/mb-1\.5 flex h-(\d+) /)?.[1]);
-
-    expect(primary).toBe(52);
-    // h-9 = 2.25rem = 36px
-    expect(secondary).toBe(9);
-    expect(primary).toBeGreaterThan(secondary * 4);
+  it('空状态文案跟着改（按钮不在下面了）', () => {
+    expect(HOME).toContain('点上面的「新建待办」加一件');
+    expect(HOME).not.toContain('点下面的按钮加一件');
   });
 });
 
