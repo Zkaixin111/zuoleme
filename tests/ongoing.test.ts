@@ -61,8 +61,8 @@ function makeTodo(
   };
 }
 
-describe('pickOngoingItem：只挑「最近一件一次性且未完成」的事', () => {
-  it('混合数据里只认那一条一次性待办（已完成 / 无期限 / 每天 / 每周都不算）', () => {
+describe('pickOngoingItem：挑「未完成 + 有截止时间」里最早的一条（不分一次性和重复）', () => {
+  it('混合数据里取最早的那一条 —— 重复任务参与竞争并可以胜出', () => {
     const todos = [
       makeTodo('done', NOW + HOUR_MS, { done: true, completedAt: NOW - 1000 }),
       makeTodo('undated', null),
@@ -71,14 +71,15 @@ describe('pickOngoingItem：只挑「最近一件一次性且未完成」的事'
       makeTodo('one-off', NOW + 5 * HOUR_MS),
     ];
 
+    // 已完成、无期限被排除；剩下三条按 deadline 升序 → 每天重复的那条最靠前
     expect(pickOngoingItem(todos)).toEqual({
-      todoId: 'one-off',
-      title: '待办 one-off',
-      deadline: NOW + 5 * HOUR_MS,
+      todoId: 'daily',
+      title: '待办 daily',
+      deadline: NOW + 2 * HOUR_MS,
     });
   });
 
-  it('多条一次性待办 → 取 deadline 最早的那条（最紧迫）', () => {
+  it('多条待办 → 取 deadline 最早的那条（最紧迫）', () => {
     const todos = [
       makeTodo('later', NOW + 3 * DAY_MS),
       makeTodo('soonest', NOW + 30 * 60_000),
@@ -88,10 +89,28 @@ describe('pickOngoingItem：只挑「最近一件一次性且未完成」的事'
     expect(pickOngoingItem(todos)?.todoId).toBe('soonest');
   });
 
-  it('重复任务哪怕时间更早也不会被选中（否则常驻卡永远在倒计时同一条）', () => {
+  it('重复任务时间更早时就会胜出（产品口径变更：不再把重复任务排在后面）', () => {
     const todos = [
       makeTodo('daily', NOW + 10 * 60_000, { repeat: { kind: 'daily' } }),
       makeTodo('one-off', NOW + 5 * DAY_MS),
+    ];
+
+    expect(pickOngoingItem(todos)?.todoId).toBe('daily');
+  });
+
+  it('每次重复任务都能上台：只有重复任务时也能选中它（常驻卡不会因此空着）', () => {
+    const todos = [
+      makeTodo('weekly', NOW + 2 * DAY_MS, { repeat: { kind: 'weekly', weekdays: [1, 4] } }),
+      makeTodo('monthly', NOW + 9 * DAY_MS, { repeat: { kind: 'monthly', dayOfMonth: 1 } }),
+    ];
+
+    expect(pickOngoingItem(todos)?.todoId).toBe('weekly');
+  });
+
+  it('一次性任务只要更早就仍然会顶掉重复任务（两者的优先级完全由时间决定）', () => {
+    const todos = [
+      makeTodo('daily', NOW + 3 * HOUR_MS, { repeat: { kind: 'daily' } }),
+      makeTodo('one-off', NOW + HOUR_MS),
     ];
 
     expect(pickOngoingItem(todos)?.todoId).toBe('one-off');
@@ -99,11 +118,11 @@ describe('pickOngoingItem：只挑「最近一件一次性且未完成」的事'
 
   it('一条符合条件的都没有 → null（原生侧收起常驻通知）', () => {
     expect(pickOngoingItem([])).toBeNull();
+    // 只有「已完成」和「无期限」时没有候选（重复任务现在算候选，所以这里不放它）
     expect(
       pickOngoingItem([
         makeTodo('done', NOW + HOUR_MS, { done: true, completedAt: NOW }),
         makeTodo('undated', null),
-        makeTodo('daily', NOW + HOUR_MS, { repeat: { kind: 'daily' } }),
       ]),
     ).toBeNull();
   });
@@ -117,10 +136,23 @@ describe('pickOngoingItem：只挑「最近一件一次性且未完成」的事'
     expect(pickOngoingItem(todos)?.todoId).toBe('pending-later');
   });
 
-  it('逾期的一次性待办仍然算「最近一件」（它更需要被看见）', () => {
+  it('逾期的待办仍然算「下一件」（它更需要被看见）', () => {
     const todos = [makeTodo('overdue', NOW - 2 * HOUR_MS), makeTodo('future', NOW + DAY_MS)];
 
     expect(pickOngoingItem(todos)?.todoId).toBe('overdue');
+  });
+
+  it('逾期很久的重复任务同样会被选中（已知后果，不是 bug）', () => {
+    // 一条一直没被「完成」的重复任务，deadline 停在过去，于是常驻卡会持续显示
+    // 「已逾期 N 天」。这与首页列表里那一行的口径一致（同样按存储的 deadline 归到「已逾期」）。
+    // 若产品将来要改成「按下一次」计算，改 pickOngoingItem（用 nextDeadlineFor）并改这条用例。
+    const todos = [
+      makeTodo('stale-daily', NOW - 3 * DAY_MS, { repeat: { kind: 'daily' } }),
+      makeTodo('future', NOW + DAY_MS),
+    ];
+
+    expect(pickOngoingItem(todos)?.todoId).toBe('stale-daily');
+    expect(pickOngoingItem(todos)?.deadline).toBe(NOW - 3 * DAY_MS);
   });
 
   it('deadline 相同时按 createdAt 定序，再相同按 id —— 结果稳定，不会每次算出来都不一样', () => {
@@ -245,6 +277,8 @@ describe('JS → 原生：updateOngoing 的调用链', () => {
   });
 
   it('注释里写清了「为什么由 JS 算这条规则」', () => {
-    expect(APP).toContain('原生只有闹钟列表，不知道哪条是重复任务');
+    // 口径改过之后，「不知道哪条是重复任务」这句不再成立（重复任务现在也参与），
+    // 新的理由是「不知道哪条已完成 / 没设时间」
+    expect(APP).toContain('原生只有闹钟列表，不知道哪条已完成 / 没设时间');
   });
 });

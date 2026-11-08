@@ -71,8 +71,8 @@ export default function App(): JSX.Element {
   const applyTodos = useCallback(async (list: readonly Todo[]): Promise<void> => {
     const sorted = sortTodos(list);
     setTodos(sorted);
-    // 常驻通知：只显示「最近一件一次性的事」，规则在 pickOngoingItem 里（见该函数注释：
-    // 原生只有闹钟列表，不知道哪条是重复任务，所以这件事必须由 JS 算）
+    // 常驻通知：显示「时间最快截止的下一件事」（不分一次性和重复），规则在 pickOngoingItem 里
+    // （见该函数注释：原生只有闹钟列表，不知道哪条已完成 / 没设时间，所以这件事必须由 JS 算）
     void updateOngoing(pickOngoingItem(sorted));
     const result = await syncAlarms(sorted);
     setScheduledCount(result.scheduled);
