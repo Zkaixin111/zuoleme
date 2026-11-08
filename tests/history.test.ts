@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { NO_REPEAT, type Todo } from '../shared/types';
 import { formatCompletedAt, sortCompleted } from '../src/lib/history';
@@ -98,5 +99,25 @@ describe('formatCompletedAt：绝对时间，不说「今天」', () => {
   it('非法时间戳 → 占位符，不崩也不显示 NaN', () => {
     expect(formatCompletedAt(Number.NaN, NOW)).toBe('—');
     expect(formatCompletedAt(Number.POSITIVE_INFINITY, NOW)).toBe('—');
+  });
+});
+
+describe('历史页整行点击不做任何动作（只有「恢复」按钮可点）', () => {
+  const HISTORY = readFileSync(new URL('../src/components/HistoryView.tsx', import.meta.url), 'utf8');
+
+  it('非选择模式下整行是静态文字，没有把行做成按钮', () => {
+    // 主页里点整行 = 进编辑；历史页里如果点整行 = 恢复，同一个手势在两个页面
+    // 做语义完全不同的事，用户不理解发生了什么。所以这里刻意是一个 div。
+    expect(HISTORY).toContain('非选择模式：整行只是文字，不做任何动作（唯一可点是右侧「恢复」）');
+    expect(HISTORY).toContain('<div className="min-w-0 flex-1">');
+  });
+
+  it('onRestore 在整个文件里只出现在「恢复」按钮上（没有第二条恢复路径）', () => {
+    expect(HISTORY.match(/onRestore\(todo\)/g)).toHaveLength(1);
+  });
+
+  it('选择模式下点行仍然切换选中（这个保留）', () => {
+    expect(HISTORY).toContain('onToggleSelection(todo)');
+    expect(HISTORY).toContain('aria-pressed={selected}');
   });
 });

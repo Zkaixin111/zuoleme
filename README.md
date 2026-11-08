@@ -24,14 +24,14 @@
 | 点待办直接编辑 | 列表里只看标题与截止/倒计时；**点整行直接进编辑页**（不再有只读详情页），改完保存即可；点左侧圆圈则直接标记完成 |
 | 长按批量删除 | 长按任意一行进入选择模式（顶部「已选 N 项 / 全选 / 取消」，底部红色「删除」），确认后逐条删除并**同时取消提醒**；滚动列表不会误触发 |
 | 返回手势 | 系统返回键 / 侧滑手势在子页面**返回上一页**（首页才退出应用）；另有右下角 48×48 浮动返回按钮，不依赖手势 |
-| 历史任务 | 已完成的待办移出主页，进「历史任务 · N」页：按**完成时间倒序**，显示「完成于 … · 原定 …」，可「恢复」或长按批量删除 |
+| 历史任务 | 已完成的待办移出主页，进「历史任务 · N」页：按**完成时间倒序**，显示「完成于 … · 原定 …」，可「恢复」或长按批量删除。**整行点击不做任何事**（只有「恢复」按钮可点），避免「主页点行 = 进编辑、历史点行 = 恢复」这种同手势不同语义 |
 | 六档提醒 | 截止前 7 天、3 天、1 天、3 小时、1 小时、到点，共 6 条独立通知；**已过去的档位不补发**；关掉提前提醒则只剩「到点」 |
 | 静音横幅 | 高重要性渠道（能弹出横幅）+ 无声音 + 无震动 + 锁屏可见；不会打断音乐，也不会震手 |
 | 每件事单独通知 | 每条闹钟有独立整型 id = `hash(todoId + 档位 + 实例时刻)`，同时作为通知 id 与 PendingIntent requestCode，互不覆盖 |
 | 点通知直达 | 通知点开就是对应的编辑页（原生侧记 `pending_open_todo`，JS 启动后取走并跳转） |
 | 重复任务 | 每天 / 每周（周几多选，至少留一天）/ 每月（几号，月底自动取当月最后一天）/ 每隔 N 天或 N 小时；「完成」= 推进到下一次，不是消失 |
 | 常驻卡片 | 顶部固定显示**最近一件带截止时间的**未完成事项：标题 22px 最醒目，第二行「今天 18:00 截止 · 还有 2 小时 13 分」（逾期整行转红并带小圆点），第三行「还有 N 档提醒」；列表里还有无期限待办时提示「另有 N 件无期限」 |
-| 通知栏常驻 | 前台服务在通知栏常驻一条「最近一件要做的一次性事情」（标题 + 剩余时间），点它直接进对应编辑页；**独立静音渠道 `ongoing`**，不弹横幅、不响、不显示角标 |
+| 通知栏常驻 | 前台服务在通知栏常驻一条「最近一件要做的一次性事情」（标题 + 绝对时间 + **系统计时器走秒的倒计时**，逾期后变正计时），点它直接进对应编辑页；**独立静音渠道 `ongoing`**，不弹横幅、不响、不显示角标 |
 | 重启后照常提醒 | 闹钟列表持久化在 `SharedPreferences`，`BootReceiver` 在 `BOOT_COMPLETED` / `LOCKED_BOOT_COMPLETED` / `QUICKBOOT_POWERON` / `MY_PACKAGE_REPLACED` 时重建；旧格式提醒会被**宽容解析**救回来（见下节） |
 | 断网可用 | 全部数据在本地，无需网络即可新建、查看、提醒 |
 | 运行检查 | 逐项显示「通知权限 / 准时触发 / 电池优化」状态，并一键跳转对应系统设置页；若磁盘上有旧提醒没能恢复，额外显示琥珀色提示条 |
@@ -67,6 +67,10 @@
 **为什么不用 `evaluateJavascript("history.back()")`**：那是异步的（要等 JS 执行完才知道有没有后退成功），
 而 `onBackPressed` 必须**同步**决定「拦还是放」。深度计数由 JS 主动写入，同步、无竞态。
 
+**别开 predictive back**：清单里若把 `android:enableOnBackInvokedCallback` 设为 `true`，
+`onBackPressed` 这个 override 就不再被调用，返回会绕过拦截直接退出应用 ——
+那时必须改成 `OnBackPressedDispatcher` + `OnBackPressedCallback`。当前 targetSdk 35 且未开启该开关。
+
 ### 通知栏常驻卡：为什么由 JS 决定显示哪一条
 
 原生手里只有闹钟列表（`AlarmRecord`：id / todoId / title / deadline / fireAt），它不知道
@@ -81,6 +85,17 @@
 2. `onStartCommand` 返回 `START_STICKY`，被系统回收后重建时拿到的是**空 Intent**，
    内容必须从 `SharedPreferences`（键 `ongoing_item`）读回来；
 3. `onDestroy` 里**不调** `stopForeground`，否则重启路径上通知会先消失再出现（用户看到闪一下）。
+
+另外两点：
+
+- **数字必须自己走**：卡上的倒计时/正计时交给系统计时器（`setWhen(deadline)` +
+  `setUsesChronometer(true)` + `setChronometerCountDown(...)`），零唤醒；
+  正文因此改放**绝对时间**（`deadlineText`：`今天 18:00` / `明天 09:00` / `11月12日 09:00`，
+  规则与 `shared/format.ts::formatDeadline` 完全一致，`tests/ongoing-chronometer.test.ts` 逐条对账）。
+  上一版把 `remainingText` 写死进正文，息屏两小时后会显示一个**停住的、错误的**数字。
+- **通知 id 7011 被保留**：提醒的 id 同时是通知 id 与 PendingIntent requestCode，
+  一旦哈希到 7011 会顶掉常驻卡。所以 `src/lib/alarms.ts` 的 `RESERVED_ALARM_IDS` 把 7011 排除，
+  `allocateId` 探测时跳过它。新增原生通知 id 时要同步加到那个集合里。
 
 ### 排程名额怎么分配
 
@@ -157,7 +172,8 @@ Android APK（Capacitor 6，完全离线）
     ├── ReminderAlarmPlugin.kt → JS 桥：scheduleAll / cancelAll / 权限三连 / getPendingOpen / setViewDepth / updateOngoing
     ├── ReminderStore.kt       → SharedPreferences 持久化 + AlarmManager 排程 + 常驻卡内容落盘
     ├── ReminderNotifier.kt    → 通知渠道（reminders_v3，IMPORTANCE_HIGH + 静音）+ 发通知
-    ├── OngoingService.kt      → 前台服务：通知栏常驻「最近一件事」（渠道 ongoing，IMPORTANCE_LOW + 静音）
+    ├── OngoingService.kt      → 前台服务：通知栏常驻「最近一件事」（渠道 ongoing，IMPORTANCE_LOW + 静音，
+    │                            倒计时/正计时交给系统计时器，零唤醒）
     ├── AlarmReceiver.kt       → 到点广播 → 现算剩余时间 → 发一条独立通知
     └── BootReceiver.kt        → 开机 / 升级后重建全部闹钟
 ```
@@ -288,8 +304,10 @@ cd android
    `START_STICKY`）。realme / OPPO / vivo 这类 ROM 的「智能省电 / 后台冻结」可能在息屏一段时间后
    把前台服务也杀掉，**此时常驻卡会消失，但提醒照旧** —— 提醒走的是
    `AlarmManager.setExactAndAllowWhileIdle`，与这个服务无关。回到应用前台会自动重新拉起常驻卡。
-   另外 Android 12+ 不允许**后台**启动前台服务，所以只在前台刷新（数据变化 / 切回前台）；
-   息屏期间倒计时文案不会自己走秒，重新打开应用才刷新。
+   另外 Android 12+ 不允许**后台**启动前台服务，所以只在前台刷新（数据变化 / 切回前台）。
+   卡上的数字由**系统计时器**（`setUsesChronometer` + `setWhen(deadline)`）渲染，每秒自己走，
+   不需要应用醒着：未到期是倒计时（正文写「今天 18:00」这样的绝对时间），逾期后自动切成正计时
+   显示「已逾期」多久。只有 Android 6（API 23）没有 `setChronometerCountDown`，降级为静态文案。
 10. **`INTERNET` 权限保留**：Capacitor 的 WebView 加载本地资源需要它，应用代码不做任何网络请求。
 11. **未做**：分类、优先级、搜索、统计、深色模式切换、iOS。
 12. **「今天 / 明天 / 本周」的分组边界用固定 `86_400_000` 偏移**，不是日历计算。

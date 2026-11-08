@@ -41,6 +41,17 @@ export const MAX_INSTANCES_PER_TODO = 24;
 export const MIN_ALARMS_PER_TODO = 8;
 
 /**
+ * 原生侧预留给自己的通知 id，提醒**不得使用**。
+ *
+ * `OngoingService.NOTIFICATION_ID = 7011` 是通知栏里那张常驻卡；而提醒的 id 同时是
+ * 通知 id 与 PendingIntent requestCode。一旦某条提醒哈希到 7011，它会**顶掉常驻卡**，
+ * 用户看到的现象是「常驻功能坏了」，而日志里什么都没有（不抛异常、不告警）。
+ *
+ * 概率很低，但这类事故的代价远高于多探测一次。新增原生通知 id 时记得同步加到这里。
+ */
+export const RESERVED_ALARM_IDS: ReadonlySet<number> = new Set<number>([7011]);
+
+/**
  * 推进到未来时最多跳多少步（安全阀）。
  *
  * 与实例数上限分开：一条「每 15 分钟」的待办如果逾期 30 天，
@@ -255,12 +266,19 @@ export function compileAlarmsWithStats(todos: readonly Todo[], now: number): Com
  * 哈希撞车概率极低（2^31 空间），但一旦撞车，两条提醒会互相覆盖，
  * 属于「静默丢提醒」级别的事故，所以这里做确定性线性探测兜底。
  *
+ * 探测时**跳过 [RESERVED_ALARM_IDS]**：那些 id 属于原生侧的常驻通知，
+ * 提醒占用了就会把常驻卡顶掉（见该常量的注释）。
+ *
  * @param candidate 哈希候选值
  * @param usedIds 已占用集合（会被就地修改）
  */
-function allocateId(candidate: number, usedIds: Set<number>): number {
+export function allocateId(candidate: number, usedIds: Set<number>): number {
   let id = candidate;
-  while (usedIds.has(id)) {
+  // 起点就落在保留区时先跳出去，避免下面的循环条件写得太绕
+  if (RESERVED_ALARM_IDS.has(id)) {
+    id = id >= ALARM_ID_MAX ? 1 : id + 1;
+  }
+  while (usedIds.has(id) || RESERVED_ALARM_IDS.has(id)) {
     id = id >= ALARM_ID_MAX ? 1 : id + 1;
   }
   usedIds.add(id);

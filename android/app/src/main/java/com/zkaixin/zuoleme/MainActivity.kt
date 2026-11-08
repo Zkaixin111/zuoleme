@@ -36,6 +36,12 @@ class MainActivity : BridgeActivity() {
      *
      * 兜底：Bridge 未就绪或没人接手时一律 `super.onBackPressed()`，
      * 宁可退出应用也不要让用户按返回没反应。
+     *
+     * **将来若开启 predictive back**（清单里把 `android:enableOnBackInvokedCallback`
+     * 设为 true），这个 override 就**不再被调用**了：必须改成
+     * `onBackPressedDispatcher.addCallback(...)` 的 `OnBackPressedCallback`，
+     * 否则返回会绕过这里的拦截、直接退出应用。当前 targetSdk 35 且未开启该开关，
+     * 走的是 legacy 路径，所以保持现状。
      */
     @Suppress("DEPRECATION")
     override fun onBackPressed() {

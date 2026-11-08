@@ -13,6 +13,8 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import java.util.Calendar
+import java.util.Locale
 
 /**
  * 常驻通知的前台服务：在通知栏一直显示「最近一件要做的事」。
@@ -112,7 +114,20 @@ class OngoingService : Service() {
     /**
      * 构造常驻通知。
      *
-     * 内容**只有标题与剩余时间**：正文（待办详情）不进通知，与提醒通知保持一致。
+     * **倒计时由系统计时器走秒**（`setUsesChronometer` + `setWhen`）：
+     * 这是「不额外唤醒、又不会显示一个停住的数字」的唯一做法 ——
+     * 自己起个每分钟的定时器就成了第二个 wake 源，代价远高于收益。
+     *
+     * 三种形态：
+     * 1. 未到期（API ≥ 24）：`setChronometerCountDown(true)` → 系统每秒往回数；
+     *    正文放**绝对时间**（「今天 18:00」），相对量由计时器负责，避免两句话打架；
+     * 2. 已逾期（API ≥ 24）：`setChronometerCountDown(false)` → 变成正计时，
+     *    显示「已逾期多久」，同样自己走；
+     * 3. API 23：没有 `setChronometerCountDown`，降级为静态文案
+     *    （`ReminderNotifier.remainingText`）。targetSdk 35、minSdk 23，
+     *    只有 Android 6.0 会走到这条路径。
+     *
+     * 内容**只有标题与时间**：正文（待办详情）不进通知，与提醒通知保持一致。
      * 点通知 → 打开应用并定位到这条待办（复用 `pending_open_todo` 那套机制）。
      *
      * @param item 要显示的一件事
@@ -120,7 +135,7 @@ class OngoingService : Service() {
     private fun buildNotification(item: OngoingItem): Notification {
         ensureChannel(this)
 
-        val body = ReminderNotifier.remainingText(item.deadline - System.currentTimeMillis())
+        val now = System.currentTimeMillis()
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(ReminderStore.EXTRA_TODO_ID, item.todoId)
@@ -132,20 +147,86 @@ class OngoingService : Service() {
         }
         val contentIntent = PendingIntent.getActivity(this, NOTIFICATION_ID, openIntent, pendingIntentFlags)
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_reminder)
             .setContentTitle(item.title)
-            .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            // 常驻 + 只在内容变化时提示一次，避免每秒刷新时反复打扰
+            // 常驻 + 只在内容变化时提示一次，避免刷新时反复打扰
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
-            .setShowWhen(false)
             .setContentIntent(contentIntent)
-            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            builder.setWhen(item.deadline)
+            builder.setUsesChronometer(true)
+            if (item.deadline > now) {
+                builder.setChronometerCountDown(true)
+                builder.setContentText(deadlineText(item.deadline, now))
+            } else {
+                builder.setChronometerCountDown(false)
+                builder.setContentText("已逾期")
+            }
+        } else {
+            // API 23 降级路径：静态文案，不随秒变化（这个版本上没有更好的办法）
+            builder.setShowWhen(false)
+            builder.setContentText(ReminderNotifier.remainingText(item.deadline - now))
+        }
+
+        return builder.build()
+    }
+
+    /**
+     * 把截止时刻说成人话：`今天 18:00` / `明天 09:00` / `昨天 10:00` /
+     * `11月12日 09:00` / `2027年1月3日 09:00`。
+     *
+     * **规则与 `shared/format.ts` 的 `formatDeadline` 完全一致，改动必须两边一起改**
+     * （`tests/ongoing-deadline-text.test.ts` 用 JS 镜像逐条对账）。
+     * 之所以不第三套逻辑：常驻通知只需要「今天/明天/昨天 + HH:mm」这几种形态，
+     * 比 `remainingText` 简单得多，单写一个函数比引一整套本地化框架划算。
+     *
+     * @param deadline 截止时刻（epoch 毫秒）
+     * @param now 当前时刻（epoch 毫秒），用于判断「今天/明天/昨天」与跨年
+     */
+    fun deadlineText(deadline: Long, now: Long): String {
+        val target = Calendar.getInstance().apply { timeInMillis = deadline }
+        val current = Calendar.getInstance().apply { timeInMillis = now }
+        val clock = String.format(
+            Locale.US,
+            "%02d:%02d",
+            target.get(Calendar.HOUR_OF_DAY),
+            target.get(Calendar.MINUTE)
+        )
+        // 用「当天 0 点」相减再取整，和 JS 侧 `Math.round((startOfTarget - startOfToday) / DAY_MS)` 一致
+        val dayDiff = Math.round(
+            (startOfDay(target) - startOfDay(current)).toDouble() / DAY_MS.toDouble()
+        )
+        return when {
+            dayDiff == 0L -> "今天 $clock"
+            dayDiff == 1L -> "明天 $clock"
+            dayDiff == -1L -> "昨天 $clock"
+            target.get(Calendar.YEAR) == current.get(Calendar.YEAR) ->
+                "${target.get(Calendar.MONTH) + 1}月${target.get(Calendar.DAY_OF_MONTH)}日 $clock"
+            else ->
+                "${target.get(Calendar.YEAR)}年${target.get(Calendar.MONTH) + 1}月" +
+                    "${target.get(Calendar.DAY_OF_MONTH)}日 $clock"
+        }
+    }
+
+    /**
+     * 取某个时刻「当天 0 点」的毫秒值。
+     *
+     * @param calendar 目标时刻（不会被修改，内部先 clone）
+     */
+    private fun startOfDay(calendar: Calendar): Long {
+        val copy = calendar.clone() as Calendar
+        copy.set(Calendar.HOUR_OF_DAY, 0)
+        copy.set(Calendar.MINUTE, 0)
+        copy.set(Calendar.SECOND, 0)
+        copy.set(Calendar.MILLISECOND, 0)
+        return copy.timeInMillis
     }
 
     companion object {
@@ -164,11 +245,15 @@ class OngoingService : Service() {
         /**
          * 通知 id。
          *
-         * 取一个不会和提醒 id 撞车的小常数：提醒 id 是 `hashAlarmKey` 出来的正整数，
-         * 理论上可能等于任何值，但常驻通知 id 固定、且提醒通知用的是各自 id，
-         * 万一撞上也只是那一条提醒覆盖常驻卡，不会丢提醒。
+         * **这个值必须与 `src/lib/alarms.ts` 的 `RESERVED_ALARM_IDS` 保持一致**：
+         * 提醒的 id 同时是通知 id 与 PendingIntent requestCode，一旦撞上，
+         * 那条提醒会把常驻卡顶掉（用户以为「常驻功能坏了」）。
+         * JS 侧已经在 `allocateId` 里跳过这个 id，两边改动要一起做。
          */
         private const val NOTIFICATION_ID = 7011
+
+        /** 一天的毫秒数（与 JS 侧 `DAY_MS` 一致，用于「今天/明天/昨天」的判定） */
+        private const val DAY_MS = 86_400_000L
 
         /** 显式停止服务的 action */
         private const val ACTION_STOP = "com.zkaixin.zuoleme.action.STOP_ONGOING"

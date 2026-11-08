@@ -22,7 +22,14 @@ export interface HistoryViewProps {
   onDeleteSelected: () => void;
 }
 
-/** 一行历史记录 */
+/**
+ * 一行历史记录。
+ *
+ * **整行点击不做任何事**，只有右侧「恢复」按钮可点（选择模式下点行 = 切换选中）。
+ * 理由：主页里点整行是「进编辑」，历史页里点整行如果变成「恢复」，同一个手势在两个
+ * 页面做语义完全不同的事，而且恢复出来的待办会突然出现在主页列表里 ——
+ * 用户不理解发生了什么。一个动作要么有明确的视觉提示（按钮），要么不要。
+ */
 function HistoryRow({
   todo,
   now,
@@ -45,6 +52,14 @@ function HistoryRow({
   const completedText = todo.completedAt === null ? '已完成' : `完成于 ${formatCompletedAt(todo.completedAt, now)}`;
   const deadlineText = todo.deadline === null ? '' : ` · 原定 ${formatDeadline(todo.deadline, now)}`;
 
+  const title = <p className="break-words text-[13px] leading-snug text-faint line-through">{todo.title}</p>;
+  const meta = (
+    <p className="mt-1 text-xs text-faint">
+      {completedText}
+      {deadlineText}
+    </p>
+  );
+
   return (
     <li
       {...press.handlers}
@@ -63,26 +78,29 @@ function HistoryRow({
         </span>
       ) : null}
 
-      <button
-        type="button"
-        className="min-w-0 flex-1 text-left"
-        onClick={() => {
-          if (press.consumeClick()) {
-            return;
-          }
-          if (selectionMode) {
+      {selectionMode ? (
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left"
+          aria-pressed={selected}
+          aria-label={`${selected ? '取消选择' : '选择'}：${todo.title}`}
+          onClick={() => {
+            if (press.consumeClick()) {
+              return;
+            }
             onToggleSelection(todo);
-            return;
-          }
-          onRestore(todo);
-        }}
-      >
-        <p className="break-words text-[13px] leading-snug text-faint line-through">{todo.title}</p>
-        <p className="mt-1 text-xs text-faint">
-          {completedText}
-          {deadlineText}
-        </p>
-      </button>
+          }}
+        >
+          {title}
+          {meta}
+        </button>
+      ) : (
+        // 非选择模式：整行只是文字，不做任何动作（唯一可点是右侧「恢复」）
+        <div className="min-w-0 flex-1">
+          {title}
+          {meta}
+        </div>
+      )}
 
       {selectionMode ? null : (
         <button
