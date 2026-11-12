@@ -79,11 +79,11 @@ class BootReceiver : BroadcastReceiver() {
         val pending = goAsync()
         receiverScope.launch {
             try {
-                TodoRepository.get(context).rescheduleAll()
+                ServiceRestarter.runHealthCheck(context, "boot")
+                ServiceRestarter.enqueuePeriodicCheck(context)
             } catch (e: Exception) {
                 Log.e(TAG, "开机恢复提醒失败", e)
             } finally {
-                PinnedTodoService.start(context)
                 pending.finish()
             }
         }

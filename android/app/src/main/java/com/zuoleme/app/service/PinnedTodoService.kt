@@ -1,14 +1,11 @@
 package com.zuoleme.app.service
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import com.zuoleme.app.data.TodoRepository
@@ -29,9 +26,11 @@ import kotlinx.coroutines.launch
  *
  * 存活策略（不承诺「永不消失」，只做系统允许范围内的最大自愈）：
  * - START_STICKY：被系统杀掉后由系统择机重启；
- * - onTaskRemoved / onDestroy：用 AlarmManager 安排一次自拉起；
- * - 开机由 BootReceiver 拉起；安卓 14+ 用户划掉常驻通知时服务仍在运行，
- *   下一次每分钟刷新会重新贴出通知。
+ * - onTaskRemoved / onDestroy：走 ServiceRestarter 的「闹钟→广播→拉服务」链路
+ *   （旧版直接用闹钟启动 Service 在安卓 12+ 会被后台限制拦截，已弃用）；
+ * - 即使服务没拉起来，每分钟闹钟（TickReceiver）与 15 分钟周期自检
+ *   （KeepAliveWorker）都会把常驻通知重贴回来，常驻通知不再单吊在服务进程上；
+ * - 开机由 BootReceiver 恢复；安卓 14+ 用户划掉常驻通知时，下一次分钟重贴会再贴出。
  */
 class PinnedTodoService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -43,6 +42,8 @@ class PinnedTodoService : Service() {
     override fun onCreate() {
         super.onCreate()
         Notifier.ensureChannels(this)
+        com.zuoleme.app.reminder.ServiceRestarter.scheduleNextTick(this)
+        com.zuoleme.app.reminder.ServiceRestarter.enqueuePeriodicCheck(this)
         startAsForeground()
         observeNearest()
         startTicker()
@@ -103,29 +104,20 @@ class PinnedTodoService : Service() {
         super.onDestroy()
     }
 
-    /** 自拉起兜底：1 秒后通过闹钟重新启动本服务（被划卡/被杀时用） */
+    /**
+     * 自拉起兜底：走「闹钟 → 广播 → 广播里启动前台服务」这条路。
+     * 旧实现直接用闹钟启动 Service，安卓 12+ 从后台拉服务会被拦截，等于没有；
+     * 广播属于精确闹钟链路，在广播里再拉前台服务成功率更高。
+     * 同时启动/续订每分钟重贴与周期自检，即使服务这次没拉起来，通知也会被贴回。
+     */
     private fun scheduleRestart() {
-        try {
-            val restartIntent = Intent(applicationContext, PinnedTodoService::class.java)
-            val pending = PendingIntent.getService(
-                applicationContext,
-                RESTART_REQUEST_CODE,
-                restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            getSystemService(AlarmManager::class.java)?.set(
-                AlarmManager.ELAPSED_REALTIME,
-                SystemClock.elapsedRealtime() + 1_000L,
-                pending,
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "安排服务自拉起失败", e)
-        }
+        com.zuoleme.app.reminder.ServiceRestarter.scheduleRestart(applicationContext)
+        com.zuoleme.app.reminder.ServiceRestarter.scheduleNextTick(applicationContext)
+        com.zuoleme.app.reminder.ServiceRestarter.enqueuePeriodicCheck(applicationContext)
     }
 
     companion object {
         private const val TAG = "PinnedTodoService"
-        private const val RESTART_REQUEST_CODE = 9001
 
         /** 启动常驻服务（已在前台/后台均可；开机场景走 BootReceiver 调用同一入口） */
         fun start(context: Context) {

@@ -93,6 +93,16 @@ object Notifier {
             ?.cancel(NotificationIds.reminder(todoId, kind))
     }
 
+    /**
+     * 直接重贴一条常驻通知（不依赖前台服务是否存活）。
+     * 服务被系统冻死时通知会随之消失，靠每分钟闹钟 + 定时自检调用本函数把通知贴回来，
+     * 与服务内刷新用同一个通知 id，互相覆盖不堆叠。
+     */
+    fun repostPinned(context: Context, todo: TodoEntity?) {
+        context.getSystemService(NotificationManager::class.java)
+            ?.notify(NotificationIds.PINNED, buildPinned(context, todo, System.currentTimeMillis()))
+    }
+
     /** 常驻通知内容：最近一件未完成的事 + 剩余时间；没有待办时显示提示文案 */
     fun buildPinned(context: Context, todo: TodoEntity?, now: Long): android.app.Notification {
         val builder = NotificationCompat.Builder(context, CHANNEL_PINNED)

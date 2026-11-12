@@ -34,6 +34,11 @@ object ReminderPlan {
         if (kind == ReminderKind.DUE) "已到截止时间" else "还有 ${kind.label}截止"
 }
 
+/** 下一次整分钟触发点：常驻通知每分钟被闹钟唤醒重贴时用。 */
+object NextTick {
+    fun nextMinuteBoundary(now: Long): Long = (now / 60_000L + 1) * 60_000L
+}
+
 /** 倒计时文案，口径与网页版 shared/format.ts 一致。 */
 object RemainingText {
     fun format(remainingMs: Long): String {

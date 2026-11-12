@@ -12,8 +12,9 @@ import com.zuoleme.app.domain.ReminderPlan
 
 /**
  * 本地闹钟调度：每档提醒一个独立 PendingIntent。
- * 有精确闹钟权限时用 setExactAndAllowWhileIdle（Doze 下也能准时），
- * 没有时自动降级为 setAndAllowWhileIdle 并打日志，不静默失败。
+ * 有精确闹钟权限时用 setAlarmClock——这是系统里优先级最高的闹钟通道
+ * （锁屏/Doze/国产系统省电下存活率都高于普通精确闹钟，状态栏还会显示下次提醒）；
+ * 没有权限时降级 setExactAndAllowWhileIdle，再不行 setAndAllowWhileIdle，全程打日志不静默。
  */
 class AlarmScheduler(private val context: Context) {
     private val alarmManager = context.getSystemService(AlarmManager::class.java)
@@ -45,6 +46,22 @@ class AlarmScheduler(private val context: Context) {
         for (item in ReminderPlan.plan(todo.deadline, now)) {
             val pending = pendingIntent(todo.id, item.kind)
             if (canExact) {
+                // 点状态栏闹钟图标回到应用（showIntent 可为待办本身，简化为最近触发的这条）
+                val showIntent = android.app.PendingIntent.getActivity(
+                    context,
+                    ("clockshow:${todo.id}").hashCode(),
+                    Intent(context, com.zuoleme.app.MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        putExtra(com.zuoleme.app.MainActivity.EXTRA_TODO_ID, todo.id)
+                    },
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+                )
+                try {
+                    manager.setAlarmClock(AlarmManager.AlarmClockInfo(item.fireAt, showIntent), pending)
+                    continue
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "setAlarmClock 被拒绝，降级精确闹钟 todo=${todo.id} kind=${item.kind.storageKey}", e)
+                }
                 manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, item.fireAt, pending)
             } else {
                 Log.w(TAG, "无精确闹钟权限，降级为非精确调度 todo=${todo.id} kind=${item.kind.storageKey}")

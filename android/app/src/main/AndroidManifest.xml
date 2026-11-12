@@ -52,6 +52,16 @@
             android:name=".reminder.CompleteReceiver"
             android:exported="false" />
 
+        <!-- 每分钟重贴常驻通知（不依赖前台服务存活） -->
+        <receiver
+            android:name=".reminder.TickReceiver"
+            android:exported="false" />
+
+        <!-- 服务自拉起广播：闹钟触发后在广播里再启动前台服务 -->
+        <receiver
+            android:name=".reminder.RestartReceiver"
+            android:exported="false" />
+
         <!-- 开机 / 应用更新后恢复全部提醒与常驻服务 -->
         <receiver
             android:name=".reminder.BootReceiver"
