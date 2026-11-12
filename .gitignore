@@ -25,3 +25,10 @@ Thumbs.db
 *.log
 npm-debug.log*
 coverage/
+
+# 安卓原生版构建产物（只提交源码，APK 本地构建）
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
