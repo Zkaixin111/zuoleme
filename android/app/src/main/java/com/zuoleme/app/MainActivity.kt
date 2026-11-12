@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.zuoleme.app.data.TodoEntity
 import com.zuoleme.app.data.TodoRepository
+import com.zuoleme.app.device.DeviceCare
 import com.zuoleme.app.domain.RemainingText
 import com.zuoleme.app.service.PinnedTodoService
 import kotlinx.coroutines.delay
@@ -376,6 +377,29 @@ private fun PermissionSettingsCard(now: Long) {
                     val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
                     context.startActivity(intent)
                 }) { Text("去豁免电池优化", color = BrandGreen) }
+            }
+
+            if (DeviceCare.isCurrentDeviceColorOsLike()) {
+                Text(
+                    "真我 / ColorOS 保活（当前设备：${DeviceCare.deviceLabel()}）",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Text(
+                    "realme UI 默认冻结后台，这三步缺一就可能通知消失，且应用读不到这些开关的状态、只能指路：\n" +
+                        "1. 自启动：点下面按钮，在列表里打开「做了么」；\n" +
+                        "2. 耗电量：应用详情 → 耗电量 → 选「允许完全后台行为」（新版本叫不受限制），顺手关掉「未使用时暂停应用活动」；\n" +
+                        "3. 锁定后台：最近任务里长按「做了么」卡片选「锁定」，并确认不在「应用快速冻结」名单里，平时别开省电模式。",
+                    color = GrayText,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(onClick = { DeviceCare.openAutoStartSettings(context) }) {
+                    Text("去开自启动（真我/ColorOS）", color = BrandGreen)
+                }
+                TextButton(onClick = { DeviceCare.openAppDetails(context) }) {
+                    Text("去应用详情改耗电量", color = BrandGreen)
+                }
             }
         }
     }
