@@ -112,8 +112,14 @@ wrangler login → wrangler d1 create zuoleme-db → 填 database_id
 3. **Cron 粒度 ±1 分钟**：提醒时间点最多晚约 60 秒（Cloudflare Cron 最小间隔）。
 4. **`requireInteraction: true` 在 Firefox for Android 不被支持**（该属性主要 Chrome 系有效）。
    Android 系统通知本身会留在通知栏直到用户划掉，所以「不自动消失」在真机上通常仍成立，但代码层面无法强制。
-5. **推送订阅被浏览器轮换（`pushsubscriptionchange`）不会自动重订阅**：旧订阅会因 410 被后端清理，
-   用户需要手动「关闭通知 → 开启通知」重建。
+5. **没有安卓原生「前台服务常驻通知」，通知无法保证永不消失**。本应用是 PWA：所谓「常驻」
+   只有应用内顶部卡片 + Web Push 通知两层。通知由 Firefox 托管，`requireInteraction` 在 Firefox
+   for Android 上不生效（见第 4 条），用户划掉、系统一键清理 Firefox 后台、清除站点数据、厂商
+   省电策略冻结 Firefox，都会让通知消失或后续推送收不到——这不是服务端能单独修好的问题。
+   手机侧请把 Firefox 设为电池「不受限 / 允许后台运行」、允许自启动，并从桌面图标打开应用。
+   代码侧已做两层自愈：订阅被浏览器轮换时（`pushsubscriptionchange`）Service Worker 自动重订阅
+   并同步后端；每次打开应用 / 切回前台时页面会自检订阅并重新上报，修复「后端订阅已被 410
+   清理、设置页却仍显示已开启」的静默停摆。若通知确实已消失，重新打开一次应用即可触发自检。
 6. **单用户、单 token**：没有账号体系，也没有速率限制。
 7. **前端没有「编辑标题/截止时间」入口**：接口 `PATCH {title, deadline}` 已支持，UI 只做了新建/完成/删除。
 8. **通知上的「完成」按钮**只有支持的平台才显示（Firefox Android 不显示 notification actions），

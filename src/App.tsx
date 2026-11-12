@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SwClientMessage, Todo } from '../shared/types';
 import { AddTodoPanel } from './components/AddTodoPanel';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { PinnedCard } from './components/PinnedCard';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TodoList } from './components/TodoList';
 import { api, getToken, setToken } from './lib/api';
+import { ensurePushSubscriptionSynced } from './lib/push';
 import { useNow } from './lib/useNow';
+
+/** 待确认的操作（完成 / 删除都走应用内中文弹窗，不再用浏览器原生 confirm） */
+type PendingConfirm = { action: 'complete' | 'delete'; todo: Todo };
 
 /** 前台时列表刷新间隔（推送到达/切回前台也会刷新） */
 const POLL_INTERVAL_MS = 30_000;
@@ -32,6 +37,7 @@ export default function App(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [token, setTokenState] = useState<string>(() => getToken());
   const [addOpen, setAddOpen] = useState<boolean>(false);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const now = useNow(1000);
 
@@ -80,6 +86,27 @@ export default function App(): JSX.Element {
     };
   }, [refresh]);
 
+  // 打开应用 / 切回前台时自检推送订阅：浏览器轮换订阅、或后端订阅已被清理时自动修复，
+  // 避免出现「设置里显示已开启、实际再也收不到通知」。失败只打日志，不弹错误打扰用户。
+  useEffect(() => {
+    if (token.length === 0) {
+      return;
+    }
+    const sync = (): void => {
+      void ensurePushSubscriptionSynced().catch((syncError: unknown) => {
+        console.warn('[push] 订阅自检同步失败，下次打开应用时重试', syncError);
+      });
+    };
+    sync();
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') {
+        sync();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [token]);
+
   // 监听 Service Worker 通知点击
   useEffect(() => {
     if (!('serviceWorker' in navigator)) {
@@ -102,8 +129,8 @@ export default function App(): JSX.Element {
     setAddOpen(false);
   };
 
-  /** 勾选完成 / 取消完成 */
-  const handleToggle = async (todo: Todo): Promise<void> => {
+  /** 实际执行完成状态切换（确认弹窗点「确认完成」后，或取消完成时直接调用） */
+  const applyToggle = async (todo: Todo): Promise<void> => {
     setBusyId(todo.id);
     try {
       const updated = await api.updateTodo(todo.id, { done: !todo.done });
@@ -117,14 +144,38 @@ export default function App(): JSX.Element {
     }
   };
 
-  /** 顶点卡片上的「完成」 */
-  const handlePinDone = async (todo: Todo): Promise<void> => {
-    await handleToggle(todo);
+  /**
+   * 勾选完成 / 取消完成。
+   * 标记完成先弹应用内中文确认弹窗（原生 confirm 的 CANCEL / OK 是英文且无法改样式）；
+   * 取消完成是可逆操作，直接执行。
+   */
+  const handleToggle = (todo: Todo): void => {
+    if (!todo.done) {
+      setPendingConfirm({ action: 'complete', todo });
+      return;
+    }
+    void applyToggle(todo);
   };
 
-  /** 删除 */
-  const handleDelete = async (todo: Todo): Promise<void> => {
-    if (!window.confirm(`删除「${todo.title}」？该事项的所有提醒会一起删除。`)) {
+  /** 顶点卡片上的「完成」 */
+  const handlePinDone = (todo: Todo): void => {
+    handleToggle(todo);
+  };
+
+  /** 删除（先弹应用内中文确认弹窗） */
+  const handleDelete = (todo: Todo): void => {
+    setPendingConfirm({ action: 'delete', todo });
+  };
+
+  /** 确认弹窗点确认后执行对应操作 */
+  const handleConfirm = async (): Promise<void> => {
+    if (!pendingConfirm) {
+      return;
+    }
+    const { action, todo } = pendingConfirm;
+    if (action === 'complete') {
+      await applyToggle(todo);
+      setPendingConfirm(null);
       return;
     }
     setBusyId(todo.id);
@@ -132,6 +183,7 @@ export default function App(): JSX.Element {
       await api.deleteTodo(todo.id);
       setTodos((current) => current.filter((item) => item.id !== todo.id));
       await refresh();
+      setPendingConfirm(null);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : '删除失败');
     } finally {
@@ -215,6 +267,26 @@ export default function App(): JSX.Element {
           + 新建待办
         </button>
       </div>
+
+      <ConfirmDialog
+        open={pendingConfirm !== null}
+        title={
+          pendingConfirm?.action === 'delete'
+            ? `删除「${pendingConfirm.todo.title}」？`
+            : `完成「${pendingConfirm?.todo.title ?? ''}」？`
+        }
+        message={
+          pendingConfirm?.action === 'delete'
+            ? '该事项的所有提醒会一起删除，删了就找不回来。'
+            : '完成后将不再提醒这件事。'
+        }
+        confirmText={pendingConfirm?.action === 'delete' ? '确认删除' : '确认完成'}
+        cancelText="取消"
+        tone={pendingConfirm?.action === 'delete' ? 'danger' : 'primary'}
+        busy={pendingConfirm !== null && busyId === pendingConfirm.todo.id}
+        onConfirm={() => void handleConfirm()}
+        onCancel={() => setPendingConfirm(null)}
+      />
 
       <AddTodoPanel open={addOpen} onClose={() => setAddOpen(false)} onSubmit={handleCreate} />
     </div>
