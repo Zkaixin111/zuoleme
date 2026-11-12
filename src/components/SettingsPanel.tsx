@@ -137,6 +137,12 @@ export function SettingsPanel({ token, onTokenSaved, defaultOpen }: SettingsPane
                 首次开启会弹出系统授权框，请选择「允许」，否则收不到提醒。
               </p>
             ) : null}
+            <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+              通知偶尔消失时先查这里：本应用是网页应用，没有安卓原生「前台服务」，通知由 Firefox
+              托管，系统无法保证永不消失。请把 Firefox 设为电池「不受限 / 允许后台运行」、允许自启动，
+              不要一键清理后台或划掉 Firefox，也不要清除本站数据；并始终从桌面图标打开本应用。
+              订阅被浏览器自动轮换时应用会自动重订，打开一次应用也会自动自检修复。
+            </p>
           </div>
 
           {/* API Token */}

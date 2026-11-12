@@ -22,13 +22,20 @@ const showNotification = vi.fn(async (_title: string, _options?: Record<string, 
 const openWindow = vi.fn(async (_url?: string) => null as unknown as WindowClient);
 const listeners = new Map<string, SwListener>();
 
+/** 记录 pushManager.subscribe 的调用（订阅轮换时自动重订阅用） */
+const pushSubscribe = vi.fn(async (_options?: unknown) => ({
+  endpoint: 'https://push.example/new',
+  options: { applicationServerKey: null, userVisibleOnly: true },
+  toJSON: () => ({ endpoint: 'https://push.example/new', keys: { p256dh: 'p', auth: 'a' } }),
+}));
+
 const fakeSelf = {
   __WB_MANIFEST: [],
   addEventListener: (type: string, listener: SwListener): void => {
     listeners.set(type, listener);
   },
   skipWaiting: vi.fn(async () => undefined),
-  registration: { showNotification },
+  registration: { showNotification, pushManager: { subscribe: pushSubscribe } },
   clients: {
     claim: vi.fn(async () => undefined),
     matchAll: vi.fn(async () => []),
@@ -141,6 +148,32 @@ describe('push 事件：解析失败时的降级路径（不能静默吞掉）',
 
     const { options } = lastNotification();
     expect(options.body).toBe('有一件事快到截止时间了');
+  });
+});
+
+describe('pushsubscriptionchange：订阅被轮换时自动重订阅（不能静默停摆）', () => {
+  it('没有 newSubscription 时用旧订阅参数重新 subscribe，而不是什么都不做', async () => {
+    const listener = listeners.get('pushsubscriptionchange');
+    expect(listener).toBeTypeOf('function');
+    pushSubscribe.mockClear();
+
+    let pending: Promise<unknown> = Promise.resolve();
+    listener?.({
+      oldSubscription: {
+        options: { applicationServerKey: new Uint8Array([1, 2, 3]), userVisibleOnly: true },
+      },
+      newSubscription: null,
+      waitUntil: (promise: Promise<unknown>): void => {
+        pending = promise;
+      },
+    });
+    // 测试环境没有 IndexedDB / token，同步后端那步会打警告日志后收尾；
+    // 这里只断言「确实发起了重订阅」这一关键行为，handler 本身不应抛错。
+    await expect(pending).resolves.toBeUndefined();
+    expect(pushSubscribe).toHaveBeenCalledTimes(1);
+    expect(pushSubscribe).toHaveBeenCalledWith(
+      expect.objectContaining({ userVisibleOnly: true }),
+    );
   });
 });
 

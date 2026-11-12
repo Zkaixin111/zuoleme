@@ -156,6 +156,45 @@ export async function unsubscribeFromPush(): Promise<void> {
   await subscription.unsubscribe();
 }
 
+/**
+ * 自检并修复推送订阅（应用打开 / 切回前台时调用，失败只打日志、不打扰用户）。
+ *
+ * 「通知莫名其妙没了」最常见的两条断裂都在这里修复：
+ * 1. 浏览器把订阅轮换/失效了（本地已无订阅）但权限还在 → 静默重新订阅并上报；
+ * 2. 浏览器侧订阅还在、但后端已把订阅删了（例如推送曾返回 410 被清理）→
+ *    设置页只看本地会显示「已开启」，实际永远收不到 → 把现有订阅重新上报一次
+ *    （后端按 endpoint upsert，重复上报无副作用）。
+ *
+ * @returns 'synced' 已同步 / 'not-granted' 未授权 / 'unsupported' 环境不支持
+ */
+export async function ensurePushSubscriptionSynced(): Promise<'synced' | 'not-granted' | 'unsupported'> {
+  const env = checkPushEnvironment();
+  if (!env.ok || getToken().length === 0) {
+    return 'unsupported';
+  }
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+    return 'not-granted';
+  }
+
+  const registration = await waitForServiceWorker();
+  const existing = await registration.pushManager.getSubscription();
+  if (!existing) {
+    // 权限还在但订阅没了：subscribeToPush 在已授权时不会再弹系统框，直接重建
+    await subscribeToPush();
+    return 'synced';
+  }
+
+  const json = existing.toJSON();
+  const endpoint = json.endpoint ?? existing.endpoint;
+  const p256dh = json.keys?.p256dh ?? '';
+  const auth = json.keys?.auth ?? '';
+  if (!endpoint || !p256dh || !auth) {
+    throw new Error('浏览器返回的订阅信息不完整');
+  }
+  await api.subscribe({ endpoint, keys: { p256dh, auth } });
+  return 'synced';
+}
+
 /** 读取当前是否已有订阅 */
 export async function hasPushSubscription(): Promise<boolean> {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
