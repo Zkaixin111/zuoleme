@@ -23,8 +23,6 @@ export interface PinnedCardProps {
   onDone: (todo: Todo) => void;
   /** 打开编辑页 */
   onOpen: (todo: Todo) => void;
-  /** 打开新建 */
-  onCreate: () => void;
 }
 
 /**
@@ -46,7 +44,6 @@ export function PinnedCard({
   busy,
   onDone,
   onOpen,
-  onCreate,
 }: PinnedCardProps): JSX.Element {
   if (!todo) {
     return (
@@ -58,9 +55,6 @@ export function PinnedCard({
         {undatedCount > 0 ? (
           <p className="mt-1 text-xs text-faint">另有 {undatedCount} 件无期限</p>
         ) : null}
-        <button type="button" className="btn-primary mt-4 w-full" onClick={onCreate}>
-          加一件要做的事
-        </button>
       </section>
     );
   }
@@ -96,16 +90,22 @@ export function PinnedCard({
         {reminderCount > 0 ? `还有 ${reminderCount} 档提醒` : '提醒已全部发出'}
       </p>
 
+      {/*
+       * 三个按钮按优先级分色（用户定的规格）：
+       * 「完成这次」是低优先级次要操作 → 暖米色描边的**空心**按钮；
+       * 「打开」是中优先级 → 浅蓝灰实底；
+       * 更高一级的「新建待办」在卡片外，用 `btn-primary`（深豆绿 `action`）。
+       */}
       <div className="mt-4 flex gap-2">
         <button
           type="button"
-          className="btn-ghost h-10 flex-1 !py-0"
+          className="btn h-10 flex-1 !py-0 border border-sand bg-transparent text-sand-deep"
           disabled={busy}
           onClick={() => onDone(todo)}
         >
           {todo.repeat.kind === 'none' ? '完成' : '完成这次'}
         </button>
-        <button type="button" className="btn-primary h-10 flex-1 !py-0" onClick={() => onOpen(todo)}>
+        <button type="button" className="btn h-10 flex-1 !py-0 bg-info text-white" onClick={() => onOpen(todo)}>
           打开
         </button>
       </div>

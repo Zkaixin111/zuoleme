@@ -35,7 +35,6 @@
 | 通知栏常驻 | 前台服务在通知栏常驻一条「下一件要做的事」（一次性任务与每天/每周的固定任务**一起比，只显示时间最快截止的那一件**；标题 + 绝对时间 + **系统计时器走秒的倒计时**，逾期后变正计时），点它直接进对应编辑页；**独立静音渠道 `ongoing`**，不弹横幅、不响、不显示角标 |
 | 重启后照常提醒 | 闹钟列表持久化在 `SharedPreferences`，`BootReceiver` 在 `BOOT_COMPLETED` / `LOCKED_BOOT_COMPLETED` / `QUICKBOOT_POWERON` / `MY_PACKAGE_REPLACED` 时重建；旧格式提醒会被**宽容解析**救回来（见下节） |
 | 断网可用 | 全部数据在本地，无需网络即可新建、查看、提醒 |
-| 运行检查 | 逐项显示「通知权限 / 准时触发 / 电池优化」状态，并一键跳转对应系统设置页；若磁盘上有旧提醒没能恢复，额外显示琥珀色提示条 |
 | 完成 / 删除 | 任何数据变化后**全量重排**提醒，删除待办即取消其全部提醒 |
 
 ### 提醒档位随重复周期收缩
@@ -205,7 +204,7 @@ shared/
   format.ts         # 倒计时 / 截止时间格式化纯函数
 src/
   main.tsx  App.tsx  index.css
-  components/       # HomeView / PinnedCard / TodoRow / TodoEditor / HistoryView / SelectionToolbar / FloatingBack / RepeatPicker / HealthPanel
+  components/       # HomeView / PinnedCard / TodoRow / TodoEditor / HistoryView / SelectionToolbar / FloatingBack / RepeatPicker / CollapsibleSection
   lib/              # api(localStorage) / alarms / reminder-bridge / ongoing / navigation / long-press / history / group-todos / useNow / idb
   sw.ts             # 仅网页版使用；APK 内不注册 Service Worker
 android/            # Capacitor 生成的 Android 工程 + 自研提醒插件（Kotlin）
@@ -221,10 +220,10 @@ worker/             # 已停用：原 Cloudflare Worker（APK 版本不使用该
 
 ```bash
 npm install
-npm run dev            # 浏览器里调试界面（此环境无系统提醒，运行检查会提示「仅 APK 可用」）
+npm run dev            # 浏览器里调试界面（此环境无系统提醒）
 npm run typecheck      # 前端 + Service Worker + Worker 三份 tsconfig
 npm run build          # 类型检查 + vite build（产物 dist/）
-npm test               # Vitest（609 个用例）
+npm test               # Vitest（614 个用例）
 ```
 
 ## 构建 APK
@@ -251,22 +250,22 @@ cd android
 
 1. 把 `app-debug.apk` 传到手机（数据线 / 微信文件传输助手 / 网盘均可）；
 2. 文件管理器里点开 APK → 允许「安装未知应用」→ 安装；
-3. 打开「做了么」，按应用内 **运行检查** 面板逐项授权（见下节）。
+3. 打开「做了么」，按下一节的清单逐项授权。
 
 ### 首次使用必须在手机上打开的开关
 
 | 位置 | 操作 | 不开的后果 |
 |---|---|---|
 | 首次启动弹出的系统授权框 | 允许通知 | 提醒照常触发，但**屏幕上什么都看不到** |
-| 应用内「运行检查 → 通知权限 → 去授权」 | 允许通知（拒绝过系统就不再弹框，只能从「去设置」手动打开） | 同上 |
-| 应用内「运行检查 → 准时触发 → 去开启」 | 允许「闹钟和提醒」 | 提醒会被推迟到系统省电窗口，可能晚十几分钟 |
-| 应用内「运行检查 → 电池优化 → 去设置」 | 找到「做了么」→ 不限制 / 不优化 | 长时间不打开应用后，息屏时可能不触发 |
+| 系统设置 → 应用管理 → 做了么 → **通知** | 允许通知（拒绝过系统就不会再弹框，只能从这里手动打开） | 同上 |
+| 系统设置 → 应用管理 → 做了么 → **闹钟和提醒** | 允许「闹钟和提醒」 | 提醒会被推迟到系统省电窗口，可能晚十几分钟 |
+| 系统设置 → 电池 → 应用耗电管理 → 做了么 | 选「不限制 / 不优化」 | 长时间不打开应用后，息屏时可能不触发 |
+| 同上一页 → 允许**后台活动**（realme / OPPO 叫「允许后台运行」） | 打开 | 同上 |
 | 系统设置 → 应用管理 → 做了么 → **自启动**（realme/OPPO/vivo/小米 有此项） | 打开 | 清理后台 / 重启后不再重建闹钟 |
-| 系统设置 → 电池 → 应用耗电管理 → 做了么 | 允许后台活动 / 不限制 | 同上 |
 
 > realme / OPPO 的路径大约在：设置 → 应用管理 → 做了么 → 耗电管理 → 「允许后台运行」+「允许自启动」。
 >
-> 首次启动若检测到通知未授权，应用会自动展开「运行检查」并在顶部显示红色提示条
+> 首次启动若检测到通知未授权，应用会在顶部显示红色提示条
 > 「通知未授权，提醒不会弹出」，附「去允许」「去系统设置」两个按钮。
 
 ---
@@ -305,7 +304,7 @@ cd android
    如果手机在触发时刻处于关机状态，该档位会直接跳过（与「已过去的档位不补发」的产品语义一致）。
 7. **通知里不放具体内容**：摘要只显示标题 + 剩余时间。这是刻意的——锁屏通知栏不适合放长正文，
    也不该把私事摊在锁屏上；正文点开**编辑页**看。
-8. **国产 ROM 的后台管控无法从应用内绕过**：只能靠用户在系统设置里白名单，运行检查面板已给出提示。
+8. **国产 ROM 的后台管控无法从应用内绕过**：只能靠用户在系统设置里白名单，见上面「首次使用必须在手机上打开的开关」一节。
 9. **通知栏常驻卡不保证一直活着**：它靠前台服务（`OngoingService`，`foregroundServiceType=specialUse`，
    `START_STICKY`）。realme / OPPO / vivo 这类 ROM 的「智能省电 / 后台冻结」可能在息屏一段时间后
    把前台服务也杀掉，**此时常驻卡会消失，但提醒照旧** —— 提醒走的是

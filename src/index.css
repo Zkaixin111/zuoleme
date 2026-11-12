@@ -44,8 +44,13 @@
       transition-opacity active:opacity-70 disabled:opacity-40 disabled:active:opacity-40;
   }
 
+  /*
+   * 主行动按钮统一走 `action`(#4A8C76 深豆绿)，而不是语义绿 `accent`(#2F5D50)：
+   * 「新建待办 / 保存 / 去允许」都属于「点这里推进流程」，
+   * 而 `accent` 还要承担「完成 / 选中 / 临近」这些语义色，两者混用会分不清主次。
+   */
   .btn-primary {
-    @apply btn bg-accent text-white;
+    @apply btn bg-action text-white;
   }
 
   .btn-ghost {

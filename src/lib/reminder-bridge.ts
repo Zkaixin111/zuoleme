@@ -219,7 +219,12 @@ export async function requestNotificationPermission(): Promise<boolean> {
   }
 }
 
-/** 跳转系统「准时触发」授权页 */
+/**
+ * 跳转系统「准时触发」授权页。
+ *
+ * 当前 UI 未挂入口（原来的「运行检查」面板已按用户要求删除），
+ * 保留给未来需要时挂回 —— 这仍然是原生侧真实具备的能力，删掉它就等于把桥拆了。
+ */
 export async function openExactAlarmSettings(): Promise<void> {
   if (!isNativePlatform()) {
     return;
@@ -231,7 +236,12 @@ export async function openExactAlarmSettings(): Promise<void> {
   }
 }
 
-/** 跳转系统「电池优化」设置页 */
+/**
+ * 跳转系统「电池优化」设置页。
+ *
+ * 当前 UI 未挂入口（原来的「运行检查」面板已按用户要求删除），
+ * 保留给未来需要时挂回 —— 原生侧的 `openBatterySettings` 仍然可用。
+ */
 export async function openBatterySettings(): Promise<void> {
   if (!isNativePlatform()) {
     return;

@@ -139,8 +139,14 @@ describe('App：深度上报与返回订阅都收敛到 goBack', () => {
 
   it('goBack 是唯一入口：选择模式优先、脏编辑要确认、其余回首页', () => {
     expect(APP).toContain('const action = decideBack({ view, selectionMode, editorDirty });');
-    expect(APP).toContain("window.confirm('放弃本次修改？')");
     expect(APP).toContain("if (action === 'exit-selection') {");
+    // 2026-11-12 起「放弃本次修改」改走应用内确认框：
+    // 系统 window.confirm 的按钮文字由 WebView 的 locale 决定（真机上是英文 CANCEL / OK），
+    // 所以这里钉的不是某个 API，而是「仍然会确认」+「不再用系统弹窗」两件事
+    expect(APP).toContain("title: '放弃本次修改？'");
+    expect(APP).toContain('await askConfirm(');
+    // 只钉「调用」而不是「出现过这个词」：注释里解释「为什么不用 window.confirm」不算违规
+    expect(APP).not.toMatch(/window\.confirm\s*\(/);
   });
 });
 

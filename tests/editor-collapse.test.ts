@@ -136,7 +136,10 @@ describe('sectionSummaries：摘要必须与表单值同步', () => {
 
 describe('折叠不影响提交值（数据层端到端）', () => {
   it('编辑「每天 · 明天 20:00 · 提前提醒开启」→ 什么都不改直接保存 → 三个值原样保留', async () => {
-    const deadline = new Date(2026, 10, 9, 20, 0, 0, 0).getTime();
+    // 截止时间必须晚于「现在」（api.createTodo 的校验），所以按当前时刻推算。
+    // 这里曾经写死成 `new Date(2026, 10, 9, 20, 0)`，到了 11 月 9 日 20:00 之后
+    // 这个「未来时间」就变成了过去，三个用例会一起变红 —— 与代码无关，纯粹是测试自己会过期。
+    const deadline = Date.now() + 2 * 60 * 60 * 1000;
     const created = await api.createTodo({
       title: '吃药',
       content: '饭后',
@@ -165,7 +168,10 @@ describe('折叠不影响提交值（数据层端到端）', () => {
   });
 
   it('展开「重复」改成「每周三」→ 收起 → 保存 → 落盘是 weekly[3]，其它字段不受影响', async () => {
-    const deadline = new Date(2026, 10, 9, 20, 0, 0, 0).getTime();
+    // 截止时间必须晚于「现在」（api.createTodo 的校验），所以按当前时刻推算。
+    // 这里曾经写死成 `new Date(2026, 10, 9, 20, 0)`，到了 11 月 9 日 20:00 之后
+    // 这个「未来时间」就变成了过去，三个用例会一起变红 —— 与代码无关，纯粹是测试自己会过期。
+    const deadline = Date.now() + 2 * 60 * 60 * 1000;
     const created = await api.createTodo({
       title: '复盘',
       content: '',
@@ -189,7 +195,10 @@ describe('折叠不影响提交值（数据层端到端）', () => {
   });
 
   it('只改标题（三块都收起）→ 时间 / 重复 / 提前提醒都不动', async () => {
-    const deadline = new Date(2026, 10, 9, 20, 0, 0, 0).getTime();
+    // 截止时间必须晚于「现在」（api.createTodo 的校验），所以按当前时刻推算。
+    // 这里曾经写死成 `new Date(2026, 10, 9, 20, 0)`，到了 11 月 9 日 20:00 之后
+    // 这个「未来时间」就变成了过去，三个用例会一起变红 —— 与代码无关，纯粹是测试自己会过期。
+    const deadline = Date.now() + 2 * 60 * 60 * 1000;
     const created = await api.createTodo({
       title: '旧标题',
       content: '说明',

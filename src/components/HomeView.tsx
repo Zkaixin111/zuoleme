@@ -1,4 +1,3 @@
-import { formatRemaining } from '../../shared/format';
 import type { Todo } from '../../shared/types';
 import { groupTodos } from '../lib/group-todos';
 import { PinnedCard, type PinnedTodo } from './PinnedCard';
@@ -33,18 +32,14 @@ export interface HomeViewProps {
   onOpenHistory: () => void;
 }
 
-/** 「11月8日 周日」 */
-function formatTodayHeader(now: number): string {
-  const date = new Date(now);
-  const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]}`;
-}
-
 /**
- * 首页：日期 + 常驻卡 + 未完成的分组列表 + 历史入口。
+ * 首页：常驻卡 + 未完成的分组列表 + 历史入口。
  *
  * **只渲染未完成的待办**：完成的事落到「历史任务」页，
  * 否则做主清单时会被已完成项干扰（尤其是「以后」组会越堆越长）。
+ *
+ * 顶部只留「今天」这一个标题（原来的「11月8日 周日」日期行已按用户要求删掉）：
+ * 它和「今天」说的是同一件事，两行字只让首屏更挤。
  */
 export function HomeView({
   todos,
@@ -76,10 +71,7 @@ export function HomeView({
     // 4.5rem(72) + safe 足够，不再按「历史行 + 主按钮」两行留一大块空白
     <div className="pb-[calc(4.5rem+env(safe-area-inset-bottom))]">
       <header className="mb-5 flex items-end justify-between px-1">
-        <div>
-          <p className="text-xs text-faint">{formatTodayHeader(now)}</p>
-          <h1 className="mt-1 text-[26px] font-semibold leading-none text-ink">今天</h1>
-        </div>
+        <h1 className="text-[26px] font-semibold leading-none text-ink">今天</h1>
         <p className="text-xs text-soft">{pending.length} 件待办</p>
       </header>
 
@@ -102,7 +94,6 @@ export function HomeView({
             busy={busyId === pinned?.id}
             onDone={onToggle}
             onOpen={onOpen}
-            onCreate={onCreate}
           />
           {/* 新建按钮放在常驻卡正下方、与卡片同宽（左边缘对齐），底部只留「历史任务」 */}
           <div className="mt-3">
@@ -154,13 +145,6 @@ export function HomeView({
             </ul>
           </section>
         ))}
-
-        {pinned ? (
-          <p className="px-1 text-[11px] leading-relaxed text-faint">
-            最近一件事还剩 {formatRemaining(pinned.deadline - now)}，
-            {pinned.advanceReminder ? '到期前会按档位静音提醒。' : '只在到点那一刻静音提醒一次。'}
-          </p>
-        ) : null}
       </div>
 
       {selectionMode ? (

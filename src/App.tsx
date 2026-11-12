@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatDeadline } from '../shared/format';
 import type { RepeatRule, Todo } from '../shared/types';
-import { HealthPanel } from './components/HealthPanel';
+import { ConfirmDialog, type ConfirmTone } from './components/ConfirmDialog';
 import { HistoryView } from './components/HistoryView';
 import { HomeView } from './components/HomeView';
 import { type PinnedTodo } from './components/PinnedCard';
@@ -34,6 +34,16 @@ interface EditorInput {
   repeat: RepeatRule;
 }
 
+/** 一次确认框请求（不含 resolve，resolve 由 `askConfirm` 的 Promise 持有） */
+interface ConfirmRequest {
+  title: string;
+  description?: string;
+  /** 确认按钮文案，必须是动词（「删除 / 放弃 / 完成」），不要用「是 / 否」 */
+  confirmLabel?: string;
+  /** `danger` = 不可撤销，红框 */
+  tone?: ConfirmTone;
+}
+
 /**
  * 应用容器：只负责数据、排程、权限与视图切换。
  *
@@ -52,11 +62,8 @@ export default function App(): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [alarmError, setAlarmError] = useState<string | null>(null);
-  const [scheduledCount, setScheduledCount] = useState<number>(0);
-  const [truncatedCount, setTruncatedCount] = useState<number>(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<PermissionSnapshot | null>(null);
-  const [checkOpen, setCheckOpen] = useState<boolean>(false);
   const [notice, setNotice] = useState<string | null>(null);
   /** 批量选择模式（主页与历史页共用一套状态） */
   const [selectionMode, setSelectionMode] = useState<boolean>(false);
@@ -64,6 +71,15 @@ export default function App(): JSX.Element {
   const [deleting, setDeleting] = useState<boolean>(false);
   /** 编辑页是否有未保存改动（返回键据此决定是否确认） */
   const [editorDirty, setEditorDirty] = useState<boolean>(false);
+  /**
+   * 应用内确认框的当前请求；null = 不显示。
+   *
+   * **刻意不用 `window.confirm`**：系统弹窗的按钮文字由 WebView 的 locale 决定
+   * （真机上显示英文 CANCEL / OK），而且无边框、无语义色，与整页纸感配色不是一套东西。
+   */
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  /** 确认框的 resolve；同一时刻只可能有一个（调用点全在用户手势里，不会并发） */
+  const confirmResolver = useRef<((value: boolean) => void) | null>(null);
   const permissionAsked = useRef<boolean>(false);
   const now = useNow(1000);
 
@@ -75,8 +91,6 @@ export default function App(): JSX.Element {
     // （见该函数注释：原生只有闹钟列表，不知道哪条已完成 / 没设时间，所以这件事必须由 JS 算）
     void updateOngoing(pickOngoingItem(sorted));
     const result = await syncAlarms(sorted);
-    setScheduledCount(result.scheduled);
-    setTruncatedCount(result.truncated);
     setAlarmError(result.ok ? null : result.error);
   }, []);
 
@@ -114,23 +128,55 @@ export default function App(): JSX.Element {
   }, []);
 
   /**
+   * 弹一个应用内确认框，等用户选完。
+   *
+   * @param request 问什么
+   * @returns 用户点「确认」为 true，点「取消 / 遮罩 / Esc」为 false
+   */
+  const askConfirm = useCallback((request: ConfirmRequest): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      confirmResolver.current = resolve;
+      setConfirmRequest(request);
+    });
+  }, []);
+
+  /** 关掉确认框并把结果交回给等待中的代码 */
+  const settleConfirm = useCallback((value: boolean): void => {
+    const resolve = confirmResolver.current;
+    confirmResolver.current = null;
+    setConfirmRequest(null);
+    resolve?.(value);
+  }, []);
+
+  /**
    * 统一的「返回」入口：右下角浮动按钮、系统返回手势、编辑页的「取消」都走这里。
    *
    * 判定顺序（选择模式优先）在 `decideBack` 里，可单测。
+   *
+   * 有未保存改动时会**等**用户在确认框里选完再决定（所以是 async）：
+   * 调用方（原生返回键 / 按钮 onClick）都不关心返回值，忽略 Promise 即可。
    */
-  const goBack = useCallback((): void => {
+  const goBack = useCallback(async (): Promise<void> => {
     const action = decideBack({ view, selectionMode, editorDirty });
     if (action === 'exit-selection') {
       exitSelection();
       return;
     }
-    if (action === 'confirm-leave-editor' && !window.confirm('放弃本次修改？')) {
-      return;
+    if (action === 'confirm-leave-editor') {
+      const leave = await askConfirm({
+        title: '放弃本次修改？',
+        description: '这一页改了的内容不会保存。',
+        confirmLabel: '放弃',
+        tone: 'danger',
+      });
+      if (!leave) {
+        return;
+      }
     }
     exitSelection();
     setEditorDirty(false);
     setView({ kind: 'home' });
-  }, [view, selectionMode, editorDirty, exitSelection]);
+  }, [view, selectionMode, editorDirty, exitSelection, askConfirm]);
 
   // 换页面时清掉临时状态：选择模式与「未保存改动」都只属于上一个页面
   useEffect(() => {
@@ -195,10 +241,8 @@ export default function App(): JSX.Element {
       if (cancelled) {
         return;
       }
-      const after = await refreshPermissions();
-      if (!after.notifications) {
-        setCheckOpen(true);
-      }
+      // 重读授权状态：没允许的话首页顶部会立刻出现红色横幅（入口在「去允许 / 去系统设置」）
+      await refreshPermissions();
     })();
 
     return () => {
@@ -229,7 +273,6 @@ export default function App(): JSX.Element {
     if (snapshot.notifications) {
       setNotice('通知权限已允许，提醒会正常弹出。');
     } else {
-      setCheckOpen(true);
       setNotice('仍未允许通知：系统不会再弹授权框，请点「去系统设置」手动打开。');
     }
   }, [refreshPermissions]);
@@ -303,20 +346,39 @@ export default function App(): JSX.Element {
    */
   const handleEditorDone = useCallback(
     async (todo: Todo): Promise<void> => {
-      const question = todo.repeat.kind === 'none' ? '标记为已完成？' : '完成这一次，并推进到下一次？';
-      if (!window.confirm(question)) {
+      const repeating = todo.repeat.kind !== 'none';
+      const ok = await askConfirm(
+        repeating
+          ? {
+              title: '完成这一次，并推进到下一次？',
+              description: '下次时间会按重复规则算出来。',
+              confirmLabel: '完成',
+            }
+          : {
+              title: '标记为已完成？',
+              description: '它会移到「历史任务」里，随时可以恢复。',
+              confirmLabel: '完成',
+            },
+      );
+      if (!ok) {
         return;
       }
       await handleToggle(todo);
       setView({ kind: 'home' });
     },
-    [handleToggle],
+    [handleToggle, askConfirm],
   );
 
   /** 删除（自带二次确认；编辑页与列表共用这一条路径） */
   const handleDelete = useCallback(
     async (todo: Todo): Promise<void> => {
-      if (!window.confirm(`删除「${todo.title}」？它之后的提醒会一起取消。`)) {
+      const ok = await askConfirm({
+        title: `删除「${todo.title}」？`,
+        description: '它之后的提醒会一起取消，无法撤销。',
+        confirmLabel: '删除',
+        tone: 'danger',
+      });
+      if (!ok) {
         return;
       }
       setBusyId(todo.id);
@@ -330,7 +392,7 @@ export default function App(): JSX.Element {
         setBusyId(null);
       }
     },
-    [load],
+    [load, askConfirm],
   );
 
   /** 恢复一条已完成的待办（历史页「恢复」） */
@@ -391,7 +453,13 @@ export default function App(): JSX.Element {
     if (ids.length === 0) {
       return;
     }
-    if (!window.confirm(`删除 ${ids.length} 件事？提醒会一起取消。`)) {
+    const ok = await askConfirm({
+      title: `删除 ${ids.length} 件事？`,
+      description: '这些事的提醒会一起取消，无法撤销。',
+      confirmLabel: '删除',
+      tone: 'danger',
+    });
+    if (!ok) {
       return;
     }
     setDeleting(true);
@@ -407,7 +475,7 @@ export default function App(): JSX.Element {
     } finally {
       setDeleting(false);
     }
-  }, [selectedIds, load, exitSelection]);
+  }, [selectedIds, load, exitSelection, askConfirm]);
 
   /** 最近一件**有截止时间**的未完成的事（无期限的没有倒计时可显示） */
   const pinned = useMemo<PinnedTodo | null>(() => {
@@ -483,7 +551,9 @@ export default function App(): JSX.Element {
       {alarmError ? (
         <div className="mb-4 rounded-card border border-alert-line bg-alert-soft px-3 py-2 text-[11px] leading-relaxed text-alert">
           提醒设置失败：{alarmError}
-          <span className="mt-1 block text-soft">请到下方「运行检查」逐项授权后重试。</span>
+          <span className="mt-1 block text-soft">
+            请在系统设置里允许通知与「闹钟和提醒」，并把电池优化设为不限制后重试。
+          </span>
         </div>
       ) : null}
 
@@ -541,19 +611,19 @@ export default function App(): JSX.Element {
         />
       ) : null}
 
-      {view.kind === 'home' ? (
-        <HealthPanel
-          scheduledCount={scheduledCount}
-          truncatedCount={truncatedCount}
-          open={checkOpen}
-          onToggle={() => setCheckOpen((value) => !value)}
-          onPermissionsChanged={setPermissions}
-        />
-      ) : null}
-
-      <p className="mt-6 pb-6 text-center text-[11px] leading-relaxed text-faint">
-        提醒由手机系统在到点时静音弹出：不联网、不经过服务器，关机重启后也会自动重建。
-      </p>
+      {/*
+        确认框挂在最外层：它是 `fixed inset-0` 的遮罩，必须脱离上面这些页面的布局，
+        而且无论当前在哪一页（首页 / 编辑页 / 历史页）都要能弹出来。
+      */}
+      <ConfirmDialog
+        open={confirmRequest !== null}
+        title={confirmRequest?.title ?? ''}
+        description={confirmRequest?.description}
+        confirmLabel={confirmRequest?.confirmLabel}
+        tone={confirmRequest?.tone}
+        onConfirm={() => settleConfirm(true)}
+        onCancel={() => settleConfirm(false)}
+      />
     </div>
   );
 }

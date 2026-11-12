@@ -256,7 +256,7 @@ describe('浅色纸感：配色 token 与禁用样式', () => {
       'src/components/FloatingBack.tsx',
       'src/components/SelectionToolbar.tsx',
       'src/components/RepeatPicker.tsx',
-      'src/components/HealthPanel.tsx',
+      'src/components/ConfirmDialog.tsx',
       'src/index.css',
       'index.html',
     ];
@@ -310,7 +310,7 @@ describe('浅色纸感：配色 token 与禁用样式', () => {
       'src/components/FloatingBack.tsx',
       'src/components/SelectionToolbar.tsx',
       'src/components/RepeatPicker.tsx',
-      'src/components/HealthPanel.tsx',
+      'src/components/ConfirmDialog.tsx',
     ]) {
       for (const match of readSource(file).matchAll(
         /(?:^|[\s"'`:])(?:bg|text|border|divide)-([a-z][a-z0-9-]*)(?:\/\d+)?/g,
@@ -334,11 +334,87 @@ describe('浅色纸感：配色 token 与禁用样式', () => {
       // 因为半透明叠在纸感底色上会随背景漂移，看起来像没对齐的贴纸
       'alert-soft',
       'alert-line',
+      // 2026-11-08 按「优先级分色」新增的三个色：
+      // action = 行动主按钮底色，info = 次优先级（打开），sand / sand-deep = 低优先级空心按钮
+      'action',
+      'info',
+      'sand',
+      'sand-deep',
       'transparent',
       'white',
     ]);
     const unknown = [...used].filter((name) => !palette.has(name) && !STRUCTURAL.has(name));
 
     expect(unknown, `引用了不存在的颜色 class: ${unknown.join(', ')}`).toEqual([]);
+  });
+
+  /*
+   * 2026-11-08 的配色规格（用户原话）——
+   *   新建待办（最高优先级，行动主按钮）｜深豆绿 #4A8C76；
+   *   打开（次优先级，查看详情）｜浅蓝灰 #6388A0；
+   *   完成这次（低优先级，次要操作）｜暖米色描边 #BFB8AA，文字 #7A7468。
+   *
+   * 这里钉的是「谁该是什么颜色」这个**意图**，不是某一串完整 class：
+   * 以后调高度、调内边距、改圆角都不该让这些用例变红；
+   * 但颜色一换、优先级一乱，必须红。
+   */
+
+  /**
+   * 把一个组件里的每个 `<button>` 拆出来，便于按文案定位到「具体哪一个按钮」。
+   *
+   * @param source 组件源码
+   */
+  function buttonsOf(source: string): string[] {
+    return [...source.matchAll(/<button[\s\S]*?<\/button>/g)].map((match) => match[0]);
+  }
+
+  it('最高优先级（新建待办 / 保存 / 加一件 / 去允许）走 action 深豆绿，不再占用语义绿 accent', () => {
+    const css = readSource('src/index.css');
+    const rule = css.match(/\.btn-primary\s*\{[^}]*\}/);
+    expect(rule, 'index.css 里找不到 .btn-primary 规则').not.toBeNull();
+    const body = rule?.[0] ?? '';
+
+    expect(body).toContain('bg-action');
+    // accent 留给「完成 / 选中 / 临近」这些语义，主按钮不再直接吃它
+    expect(body).not.toContain('bg-accent');
+  });
+
+  it('次优先级「打开」用 info 浅蓝灰实底（不是深豆绿主按钮，也不是描边按钮）', () => {
+    const open = buttonsOf(readSource('src/components/PinnedCard.tsx')).find((button) =>
+      button.includes('打开'),
+    );
+    expect(open, 'PinnedCard 里找不到「打开」按钮').toBeDefined();
+    expect(open).toContain('bg-info');
+    expect(open).toContain('text-white');
+    expect(open).not.toContain('btn-primary');
+    expect(open).not.toContain('btn-ghost');
+  });
+
+  it('低优先级「完成这次 / 完成」是 sand 描边的空心按钮（不是实底，也不是描边灰）', () => {
+    const done = buttonsOf(readSource('src/components/PinnedCard.tsx')).find((button) =>
+      button.includes("'完成这次'"),
+    );
+    expect(done, 'PinnedCard 里找不到「完成这次」按钮').toBeDefined();
+    expect(done).toContain('border-sand');
+    expect(done).toContain('bg-transparent');
+    expect(done).toContain('text-sand-deep');
+    expect(done).not.toContain('btn-primary');
+    expect(done).not.toContain('btn-ghost');
+  });
+
+  it('三个新色 token 的色值与规格逐字一致', () => {
+    expect(TAILWIND).toContain("action: '#4A8C76'");
+    expect(TAILWIND).toContain("info: '#6388A0'");
+    // sand 是带 deep 的对象：DEFAULT 供 border-sand，deep 供 text-sand-deep
+    expect(TAILWIND).toMatch(/sand:\s*\{\s*DEFAULT:\s*'#BFB8AA',\s*deep:\s*'#7A7468'\s*\}/);
+  });
+
+  it('首页顶部不再有日期行（只剩「今天」+「N 件待办」）', () => {
+    const home = readSource('src/components/HomeView.tsx');
+    expect(home).not.toContain('formatTodayHeader');
+    // 「11月8日 周日」那种拼接彻底消失
+    expect(home).not.toMatch(/月\$\{/);
+    expect(home).toContain('>今天</h1>');
+    expect(home).toContain('{pending.length} 件待办');
   });
 });
