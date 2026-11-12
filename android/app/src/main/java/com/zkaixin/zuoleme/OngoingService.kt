@@ -69,7 +69,11 @@ class OngoingService : Service() {
         try {
             startForegroundCompat(notification)
         } catch (error: Exception) {
-            // Android 12+ 在后台启动前台服务会被拒绝；这里不能崩，下次回前台会重试
+            // Android 12+ 在后台启动前台服务会被拒绝；这里不能崩，下次回前台会重试。
+            // **注意：这里吞掉异常 + stopSelf 是刻意的**，不要改成「重试几次」或「起闹钟再拉」：
+            // 后台启动被拒意味着本进程此刻没有资格做前台服务，硬留着一个半死不活的服务
+            // 只会占着进程位不干活；[ensureAlive]（提醒触发 / 开机时机）和前台 [start]
+            // 都会再给它一次机会。
             Log.w(TAG, "启动前台服务失败，常驻通知暂不可用", error)
             stopSelf()
             return START_NOT_STICKY
@@ -82,6 +86,11 @@ class OngoingService : Service() {
      *
      * **刻意不调 `stopForeground`**：见类注释第 3 条。
      * 显式停止时系统会跟着移除通知；被系统杀掉时不会有这条路径。
+     *
+     * **也刻意不在这里「重启自己」**：`onDestroy` 不保证被调用（进程被直接杀掉时根本没有这条路径），
+     * 而 `START_STICKY` 的系统重建与「onDestroy 里再 start 一次」会互相打架
+     * （两次 `startForeground` 抢同一个通知位，用户看到通知闪烁）。
+     * 「服务死了之后怎么活回来」这件事归 [ensureAlive] 管。
      */
     override fun onDestroy() {
         Log.i(TAG, "常驻服务结束")
@@ -324,6 +333,69 @@ class OngoingService : Service() {
                 context.stopService(intent)
             } catch (error: Exception) {
                 Log.w(TAG, "停止常驻服务失败", error)
+            }
+        }
+
+        /**
+         * **该有常驻卡的时候，确保它真的在显示。**
+         *
+         * 为什么需要这个方法 —— 三个缺口，都不是猜测：
+         * 1. [BootReceiver] 原来只重建闹钟：`ongoing_item` 明明还在磁盘上，却没人调 [start]，
+         *    所以**关机重启后、以及每次覆盖安装（`MY_PACKAGE_REPLACED`）后，常驻卡都会消失**，
+         *    直到用户手动打开应用；
+         * 2. 提醒的 exact alarm 触发是现成的自愈时机，却从没被用上（见下面的豁免依据）；
+         * 3. Android 14 起用户可以划掉前台服务的通知：服务可能还活着，通知没了。
+         *
+         * 为什么只在「提醒触发后 / 开机重建后」调用是**合法**的：
+         * Android 12+ 在应用处于后台时启动前台服务会抛 `ForegroundServiceStartNotAllowedException`，
+         * 但系统文档把两类时刻明确列为豁免 —— 由 `AlarmManager.setExactAndAllowWhileIdle`
+         * 触发的广播（本应用的 [AlarmReceiver] 正是），以及 `BOOT_COMPLETED` /
+         * `MY_PACKAGE_REPLACED` 这类系统广播（[BootReceiver]）。所以本方法只被这两个
+         * 接收器调用；应用内的其余场合一律走前台的 [start]，不要把 [ensureAlive]
+         * 挪到别的后台路径上去。
+         *
+         * 为什么**不**做「每 N 分钟一次的看护闹钟」：那是拿持续的电池唤醒去换一个纯视觉
+         * 元素 —— 开机（缺口 1）和每一次提醒（缺口 2）已经免费覆盖了绝大多数丢失场景；
+         * 真被国产 ROM 杀掉、又还没等到下一次提醒的间隙，就让它先缺着，用户回到前台
+         * 会立刻补上（[start] 路径）。**不要以后「顺手」加看护闹钟。**
+         *
+         * 三步，每一步都刻意吞异常（调用方是广播接收器，这里崩了会连累提醒）：
+         * 1. [ReminderStore.loadOngoing] 为 null → 直接返回（**不许凭空拉起服务**，
+         *    否则会凭空出现一条空白常驻卡）；
+         * 2. `getActiveNotifications()` 里能找到 [NOTIFICATION_ID] → 通知还挂着，返回；
+         * 3. 否则 [start]：服务已死就走正常启动；服务活着只是通知被划掉，
+         *    `startForegroundService` 会再投递一次 `onStartCommand` 并重新 `startForeground`，
+         *    正好把通知补回来。
+         *
+         * `getActiveNotifications()` 只返回**本应用**的通知，不需要权限；它是 API 23 加入的，
+         * 本工程 minSdk 恰好是 23，可以直接用。个别 ROM 在这条路径上抛
+         * `SecurityException` / `DeadObjectException`，整个方法体都在 try/catch 里 ——
+         * `LOCKED_BOOT_COMPLETED`（直启模式、加密存储不可读）导致的读盘异常也在其内，
+         * 随后的 `BOOT_COMPLETED` 会补上。
+         *
+         * @param context 任意 Context
+         */
+        fun ensureAlive(context: Context) {
+            try {
+                // 1. 没有要显示的事，绝不拉起服务
+                if (ReminderStore.loadOngoing(context) == null) {
+                    return
+                }
+                // 2. 通知还挂在通知栏就什么都不做
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                if (manager == null) {
+                    return
+                }
+                val alive = manager.activeNotifications.any { it.id == NOTIFICATION_ID }
+                if (alive) {
+                    return
+                }
+                // 3. 该有却没有：拉起来
+                Log.i(TAG, "常驻通知不在了，磁盘上仍有要显示的事，重新拉起")
+                start(context)
+            } catch (error: Exception) {
+                // 只记日志，绝不抛给调用方（BootReceiver / AlarmReceiver 崩了会连累提醒）
+                Log.w(TAG, "确认/重建常驻通知失败", error)
             }
         }
     }

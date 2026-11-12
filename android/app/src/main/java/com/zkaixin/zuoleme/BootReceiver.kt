@@ -7,17 +7,22 @@ import android.os.Build
 import android.util.Log
 
 /**
- * 开机 / 应用更新后重建所有闹钟。
+ * 开机 / 应用更新后重建所有闹钟，并顺手把常驻通知拉回来。
  *
  * 这是「手机关机重启后提醒照常响」的**唯一保证**：
  * `AlarmManager` 里的闹钟在重启后全部丢失，只有把列表持久化并在这里重排，提醒才不会断。
  *
+ * 除了闹钟，这里还要恢复**常驻通知**（[OngoingService.ensureAlive]）：
+ * 重启 / 覆盖安装同样会杀掉前台服务，而 `ongoing_item` 还在磁盘上 ——
+ * 不在这里拉的话，常驻卡会一直消失到用户下次打开应用。
+ *
  * 监听的广播：
  * - `BOOT_COMPLETED`：正常开机完成（最常见）；
- * - `LOCKED_BOOT_COMPLETED`：直接启动模式下解锁前（部分设备；此时加密存储不可读，读失败就跳过，
- *    随后的 BOOT_COMPLETED 会补上）；
+ * - `LOCKED_BOOT_COMPLETED`：直接启动模式下解锁前（部分设备；此时加密存储不可读，
+ *   [OngoingService.ensureAlive] 内部会吞掉读盘异常，随后的 BOOT_COMPLETED 会补上）；
  * - `QUICKBOOT_POWERON` / `com.htc.intent.action.QUICKBOOT_POWERON`：部分国产 ROM 的快速开机；
- * - `MY_PACKAGE_REPLACED`：应用升级安装后，闹钟同样会被清空，需要重排。
+ * - `MY_PACKAGE_REPLACED`：应用升级安装后，闹钟同样会被清空，需要重排
+ *   （升级时前台服务被杀，常驻卡也是在这里恢复）。
  */
 class BootReceiver : BroadcastReceiver() {
 
@@ -32,6 +37,10 @@ class BootReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         try {
             ReminderNotifier.ensureChannel(context)
+            // 常驻通知的恢复**先于**闹钟判空：闹钟可以是零条（比如所有待办都没设时间），
+            // 但只要磁盘上有 ongoing_item，常驻卡就该显示。
+            // ensureAlive 自己吞掉所有异常，不会影响下面闹钟重建的日志与 try/catch 归因。
+            OngoingService.ensureAlive(context)
             val alarms = ReminderStore.load(context)
             if (alarms.isEmpty()) {
                 Log.i(TAG, "$action：没有需要重建的闹钟")

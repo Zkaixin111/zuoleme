@@ -7,13 +7,18 @@ import android.os.PowerManager
 import android.util.Log
 
 /**
- * 提醒到点时的接收器：发一条静音通知。
+ * 提醒到点时的接收器：发一条静音通知，然后顺手确认常驻通知还活着。
  *
  * 由 `AlarmManager.setExactAndAllowWhileIdle` 触发，因此**不需要应用在运行**，
  * 也不需要屏幕点亮（RTC_WAKEUP 会把设备从 Doze 里唤醒）。
  *
  * 通知正文在这里现算：`deadline - 当前时间`。所以补发（晚触发）时文案依然准确，
  * 例如关机一夜后补发，会说「已逾期 9小时」而不是「还有 1小时截止」。
+ *
+ * 顺手自愈常驻通知（[OngoingService.ensureAlive]）的原因：由 exact alarm 触发的
+ * 广播是 Android 12+「后台启动前台服务」限制的**豁免场景**之一 —— 每响一次提醒，
+ * 就有一次免费把被杀掉的常驻服务拉回来的机会，零额外唤醒。
+ * **提醒永远优先**：常驻的确认放在发完通知之后、单独 try/catch，它失败绝不影响提醒。
  */
 class AlarmReceiver : BroadcastReceiver() {
 
@@ -41,14 +46,26 @@ class AlarmReceiver : BroadcastReceiver() {
         }
 
         try {
-            val remaining = if (deadline > 0L) deadline - System.currentTimeMillis() else 0L
-            // 旧格式（v1）救回来的记录没有 deadline（它是 0），正文是当时就算好的那句。
-            // 绝不能拿 0 去算剩余时间 —— 那会得到「已逾期 56 年」这种荒谬文案。
-            val legacyBody = if (deadline > 0L) null else ReminderStore.findLegacyBody(context, alarmId)
-            val body = legacyBody ?: ReminderNotifier.remainingText(remaining)
-            ReminderNotifier.notifyReminder(context, alarmId, todoId, title, body)
-        } catch (error: Exception) {
-            Log.e(TAG, "发送提醒通知失败 id=$alarmId", error)
+            try {
+                val remaining = if (deadline > 0L) deadline - System.currentTimeMillis() else 0L
+                // 旧格式（v1）救回来的记录没有 deadline（它是 0），正文是当时就算好的那句。
+                // 绝不能拿 0 去算剩余时间 —— 那会得到「已逾期 56 年」这种荒谬文案。
+                val legacyBody = if (deadline > 0L) null else ReminderStore.findLegacyBody(context, alarmId)
+                val body = legacyBody ?: ReminderNotifier.remainingText(remaining)
+                ReminderNotifier.notifyReminder(context, alarmId, todoId, title, body)
+            } catch (error: Exception) {
+                Log.e(TAG, "发送提醒通知失败 id=$alarmId", error)
+            }
+
+            // 提醒已尽力发完，再管常驻。刻意放在释放 WakeLock **之前**：
+            // startForegroundService 之后服务要在 5 秒内 startForeground，
+            // 持着锁能保证这段路径不被 Doze 打断。ensureAlive 自己吞异常，
+            // 外面再包一层是双保险 —— 常驻的任何失败都不许影响提醒的收尾。
+            try {
+                OngoingService.ensureAlive(context)
+            } catch (error: Exception) {
+                Log.w(TAG, "确认常驻通知失败（不影响本次提醒）", error)
+            }
         } finally {
             try {
                 if (wakeLock?.isHeld == true) {
