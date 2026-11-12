@@ -1,0 +1,69 @@
+# 做了么 · 安卓原生版（方案一）
+
+网页版（PWA）在无 Firefox、无谷歌服务的手机上推送走不通，本目录是 **Kotlin + Jetpack Compose
+原生应用**：提醒全部在手机本地调度，不依赖服务器、网络和任何推送服务。
+
+## 已实现（第一期）
+
+| 能力 | 实现 |
+|---|---|
+| 前台服务常驻通知 | `PinnedTodoService`：常驻显示最近一件未完成的事 + 倒计时，每分钟刷新，通知带「完成」按钮 |
+| 六档提醒 | `AlarmManager` 精确闹钟（无权限自动降级非精确并打日志）+ 本地 Room 存储，规则与网页版一致（已过去档位不补发） |
+| 每件事单独通知 | 每档通知独立 id，互不覆盖，通知上可直接「完成」 |
+| 存活自愈 | 服务被杀 `START_STICKY` + 自拉起闹钟 + 开机广播恢复全部提醒；数据/完成/删除即时同步闹钟 |
+| 编辑 | 点列表项可改标题与截止日期/时间（网页版没有此入口） |
+| 中文确认弹窗 | 完成=绿色描边实心、删除=红色、取消=灰色描边，弹窗带边框，无系统英文按钮 |
+| 权限引导 | 设置卡片直达：精确闹钟、电池优化豁免；通知权限首次启动自动申请 |
+
+> 安卓 14+ 系统允许用户划掉前台服务通知（服务本身不消失，下一次每分钟刷新会重新贴出）；
+> 任何应用都做不到「用户永远划不掉」，本应用做的是系统允许范围内的最大自愈。
+> 常驻服务用了 `specialUse` 类型并在清单里写明用途；个人自装 APK 不受应用商店政策约束。
+
+## 构建
+
+前置：JDK 17+、Android SDK（platform 35、build-tools 35）。在 `android/` 目录：
+
+```bash
+export ANDROID_HOME=~/android-sdk   # 换成你的 SDK 路径
+./gradlew :app:assembleDebug        # 调试 APK：app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:testDebugUnitTest    # 六档提醒 / 倒计时纯逻辑单元测试
+```
+
+本仓库在无预装 SDK 的云端环境从零验证过以上两条命令（Gradle 8.9 + AGP 8.7.3 + Kotlin 2.0.21）。
+
+## 装到手机
+
+1. 直接装调试 APK 即可自用：把 `app-debug.apk` 传到手机，允许「安装未知来源应用」后安装。
+2. 想长期用建议签一个自己的正式包（签名不变才能覆盖升级、不丢数据）：
+
+```bash
+keytool -genkeypair -v -keystore ~/zuoleme.jks -alias zuoleme -keyalg RSA -keysize 2048 -validity 10000
+```
+
+把签名配置写进 `app/build.gradle.kts` 的 `signingConfigs` 后再 `assembleRelease`。
+**密钥文件不要提交进仓库**（已在根 `.gitignore` 忽略 `*.apk`，jks 请放在仓库外）。
+
+3. 首次打开后按顺序做三件事（缺一不可）：
+   - 通知权限弹窗点「允许」；
+   - 设置卡片里开启「精确闹钟」；
+   - 设置卡片里豁免电池优化，并在系统应用管理里把本应用电池设为「不受限 / 允许后台运行」
+     （国产系统这一步最关键，不做的话常驻服务会被冻结，表现就是通知消失）。
+
+## 数据迁移
+
+第一期纯本地存储，与网页版 D1 不互通。网页版里没完成的事不多的话，在原生版手动重建即可；
+若条数较多，后续可加一个「从旧版导出 JSON 再导入」的功能，但不要为这事保留服务器依赖。
+
+## 目录
+
+```
+app/src/main/java/com/zuoleme/app/
+  MainActivity.kt          # Compose 界面（列表/常驻卡片/编辑/中文确认弹窗/权限卡片）
+  ZuolemeApp.kt            # Application：建通知渠道
+  domain/ReminderPlan.kt   # 六档提醒 + 倒计时纯逻辑（有单元测试）
+  data/                    # Room 实体/DAO/仓库（写操作同步维护闹钟）
+  reminder/                # 闹钟调度、到点接收器、完成动作、开机恢复
+  service/PinnedTodoService.kt  # 前台服务常驻通知
+  notify/Notifier.kt       # 通知渠道与构建
+app/src/test/              # JVM 单元测试（ReminderPlanTest / RemainingTextTest）
+```
